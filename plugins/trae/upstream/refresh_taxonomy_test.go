@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 // TestExplainRefreshError: 三码各自的 Msg（ResponseMetadata 大写 Code 信封

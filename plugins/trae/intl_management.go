@@ -25,12 +25,10 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/intlupstream"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -182,11 +180,6 @@ type intltraeAccount struct {
 // per account on every page load); the panel can lazily trigger /status if
 // it wants live reachability.
 func intlbuildDashboard() map[string]any {
-	// v0.12.26: heal intl credentials missing from the host manager first
-	// (same reconciliation-drop mechanism as the CN panel; see heal.go).
-	if n := healAuthRegistration(intlproviderName+"-", intlhostAuthList); n > 0 {
-		log.Printf("trae-intl dashboard: healed %d credential(s) missing from host manager", n)
-	}
 	files, err := intlhostAuthList()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
@@ -386,57 +379,6 @@ func intlhostAuthSave(name string, raw []byte) error {
 		return fmt.Errorf("host.auth.save: bad envelope")
 	}
 	return nil
-}
-
-// intlpersistRefreshedAuth writes updated token fields back to host auth store.
-func intlpersistRefreshedAuth(req pluginapi.ExecutorRequest, a *upstream.Auth) {
-	fileName := req.AuthID
-	if fileName == "" {
-		fileName = fmt.Sprintf("%s-%s.json", intlproviderName, a.UID)
-	}
-	intlpersistRefreshedAuthTo(fileName, a)
-}
-
-// intlpersistRefreshedAuthTo is the fileName-resolving core of
-// intlpersistRefreshedAuth, shared with the model.for_auth path (v0.12.53):
-// dynamic model discovery also talks to the upstream with the account token,
-// so a token refreshed there must persist or discovery keeps failing while
-// chat (which refreshes in its own path) keeps working.
-func intlpersistRefreshedAuthTo(fileName string, a *upstream.Auth) {
-	if fileName == "" {
-		fileName = fmt.Sprintf("%s-%s.json", intlproviderName, a.UID)
-	} else if !strings.HasSuffix(strings.ToLower(fileName), ".json") {
-		// v0.12.8: a uid-shaped AuthID would land as an extension-less
-		// file the watcher ignores, losing the refreshed token on restart.
-		fileName += ".json"
-	}
-	storageJSON, _ := json.MarshalIndent(map[string]any{
-		"type":     intlproviderName,
-		"provider": intlproviderName,
-		"auth": map[string]any{
-			"accessToken":  a.AccessToken,
-			"refreshToken": a.RefreshToken,
-			"expiresAt":    a.ExpiresAt,
-			"domain":       a.Domain,
-			"apiHost":      a.APIHost,
-			// v0.12.6: match the login path — stamp intl explicitly.
-			"variant":     "intl",
-			"region":      a.Region,
-			"scope":       a.Scope,
-			"tenant":      a.Tenant,
-			"appLanguage": a.AppLanguage,
-			"appVersion":  a.AppVersion,
-		},
-		"account": map[string]any{
-			"uid":          a.UID,
-			"enterpriseId": a.EnterpriseID,
-			"nickname":     a.Nickname,
-		},
-		"disabled": false,
-	}, "", "  ")
-	if err := intlhostAuthSave(fileName, storageJSON); err != nil {
-		log.Printf("persist refreshed auth %s: %v", a.UID, err)
-	}
 }
 
 // intlhandleImportAuth imports a Trae Intl credential JSON into the host auth store.

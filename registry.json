@@ -1,161 +1,19 @@
 {
   "schema_version": 2,
-  "release_notes": "https://github.com/mmqz/cpa-multi-plugins/releases/latest",
-  "downloads": {
-    "unified": {
-      "darwin-amd64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-darwin-amd64.zip",
-      "darwin-arm64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-darwin-arm64.zip",
-      "linux-amd64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-linux-amd64.zip",
-      "linux-arm64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-linux-arm64.zip",
-      "windows-amd64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-windows-amd64.zip"
-    },
-    "split": {
-      "darwin-amd64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-split-darwin-amd64.zip",
-      "darwin-arm64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-split-darwin-arm64.zip",
-      "linux-amd64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-split-linux-amd64.zip",
-      "linux-arm64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-split-linux-arm64.zip",
-      "windows-amd64": "https://github.com/mmqz/cpa-multi-plugins/releases/latest/download/cpa-multi-plugins-split-windows-amd64.zip"
-    },
-    "note": "Each unified zip bundles all five plugins for that platform; the 'releases/latest/download' URLs always resolve to the newest tagged release. For the CLIProxyAPI plugin store (install/update per plugin from the management panel) each release additionally carries per-plugin zips named '{plugin_id}_{version}_{goos}_{goarch}.zip' plus a checksums.txt — the store resolves them from each plugin's repository field automatically. The split package carries the legacy per-variant plugin ids (codebuddy-cn, trae-solo-cn, ...) — install it INSTEAD OF, not next to, the unified plugin of the same provider."
-  },
+  "release_notes": "https://github.com/bfSan/trae-cpa-plugin/releases/latest",
   "plugins": [
-    {
-      "id": "workbuddy",
-      "name": "CodeBuddy",
-      "description": "Tencent CodeBuddy / WorkBuddy unified provider for CPA (merged v0.9.0 + v0.11.0): one credit pool, three realms (copilot.tencent.com CN, workbuddy.ai Global, codebuddy.ai Intl), dual login platforms (CLI + CodeBuddy IDE), auto-adopts legacy codebuddy-cn / codebuddy-intl auth files, OpenAI-compatible chat, daily check-in, credit lifecycle, multi-account pool.",
-      "author": "mmqz",
-      "version": "0.9.62",
-      "changelog": "The 11128 conversation-header wave goes realm-unconditional — Global (PR #43) plus Intl (issue #44) and CN (issue #45) all carry the desktop client's X-Conversation-* headers now, blank-only fill, caller-supplied ids preserved.",
-      "repository": "https://github.com/mmqz/cpa-multi-plugins",
-      "homepage": "https://github.com/mmqz/cpa-multi-plugins/tree/main/plugins/workbuddy",
-      "license": "MIT",
-      "platforms": [
-        "darwin-amd64",
-        "darwin-arm64",
-        "linux-amd64",
-        "linux-arm64",
-        "windows-amd64"
-      ],
-      "split_channels": [
-        "codebuddy-cn",
-        "codebuddy-intl"
-      ],
-      "tags": [
-        "Provider",
-        "OAuth",
-        "WorkBuddy",
-        "CodeBuddy",
-        "CheckIn"
-      ]
-    },
-    {
-      "id": "qoder",
-      "name": "Qoder",
-      "description": "Qoder unified provider for CPA (merged v0.10.0): CN (qoder.com.cn) and Intl (qoder.com / openapi.qoder.sh) in one plugin, per-account region routing, device-flow + PAT login, COSY-signed chat, daily check-in with streak, Pro upgrade claim, token keepalive, auto-adopts legacy qoder-cn / qoder-intl auth files.",
-      "author": "mmqz",
-      "version": "0.8.64",
-      "changelog": "Queue-ticket retry (10605 RESOURCE_LIMIT): wait retryAfterSeconds and re-issue up to 3 rounds, readable queue_limit failure line, model-scoped 60s cooldown.",
-      "repository": "https://github.com/mmqz/cpa-multi-plugins",
-      "homepage": "https://github.com/mmqz/cpa-multi-plugins/tree/main/plugins/qoder",
-      "license": "MIT",
-      "platforms": [
-        "darwin-amd64",
-        "darwin-arm64",
-        "linux-amd64",
-        "linux-arm64",
-        "windows-amd64"
-      ],
-      "split_channels": [
-        "qoder-cn",
-        "qoder-intl"
-      ],
-      "tags": [
-        "Provider",
-        "OAuth",
-        "Qoder",
-        "QoderWork",
-        "CheckIn"
-      ]
-    },
     {
       "id": "trae",
       "name": "Trae",
-      "description": "Trae unified provider for CPA (merged v0.12.0): Trae Code CN (api.trae.cn inline_chat), Trae SOLO CN (solo_work_lite) and Trae Intl (api.marscode.com Web SOLO) in one plugin, per-variant routing, real-time SSE, daily check-in, auto-adopts legacy trae-cn / trae-solo-cn / trae-intl auth files.",
-      "author": "mmqz",
-      "version": "0.12.78",
-      "changelog": "Test-only flake fix (stream-head drain) riding the v0.8.74 plugin-store asset release; behavior unchanged from 0.12.77.",
-      "repository": "https://github.com/mmqz/cpa-multi-plugins",
-      "homepage": "https://github.com/mmqz/cpa-multi-plugins/tree/main/plugins/trae",
+      "description": "Trae CN / SOLO CN / Intl provider for CPA. Protocol, credentials, confirmed check-in and account facts only; staged/CPA owns account pools and routing.",
+      "author": "bfSan",
+      "version": "0.13.0",
+      "changelog": "Standalone Trae fork; remove routing policy pool, unify panel, safe credential maintenance, confirmed check-in, staged login recovery and HTTP routing.",
+      "repository": "https://github.com/bfSan/trae-cpa-plugin",
+      "homepage": "https://github.com/bfSan/trae-cpa-plugin",
       "license": "MIT",
-      "platforms": [
-        "darwin-amd64",
-        "darwin-arm64",
-        "linux-amd64",
-        "linux-arm64",
-        "windows-amd64"
-      ],
-      "split_channels": [
-        "trae-cn",
-        "trae-solo-cn",
-        "trae-intl"
-      ],
-      "tags": [
-        "Provider",
-        "OAuth",
-        "Trae",
-        "TraeWork",
-        "CheckIn"
-      ]
-    },
-    {
-      "id": "zcode",
-      "name": "ZCode",
-      "description": "ZCode unified provider for CPA (GLM coding plan): Z.AI (api.z.ai) and BigModel (open.bigmodel.cn) in one plugin, server-mediated CLI login via zcode.z.ai (no local callback), per-account provider routing, permanent API keys + plan JWT, Client Request Signing V4 (Ed25519 + PoW, fail-open retry ladder), pinned glm-4.5-air..glm-5.3-flash catalog, billing/balance quota panel, per-model cooldown, auto-adopts legacy zcode.json files.",
-      "author": "mmqz",
-      "version": "0.2.1",
-      "changelog": "Captcha popup now triggers through the SDK-bound button with a 12s SDK load timeout instead of dead-ending on a missing global (PR #41).",
-      "repository": "https://github.com/mmqz/cpa-multi-plugins",
-      "homepage": "https://github.com/mmqz/cpa-multi-plugins/tree/main/plugins/zcode",
-      "license": "MIT",
-      "platforms": [
-        "darwin-amd64",
-        "darwin-arm64",
-        "linux-amd64",
-        "linux-arm64",
-        "windows-amd64"
-      ],
-      "tags": [
-        "Provider",
-        "OAuth",
-        "ZCode",
-        "GLM",
-        "Z.AI",
-        "BigModel"
-      ]
-    },
-    {
-      "id": "mimo",
-      "name": "MiMo",
-      "description": "Xiaomi MiMo provider for CPA: platform OAuth lane with desktop session adoption as a secondary lane, serving the MiMo chat model family through the OpenAI-compatible surface.",
-      "author": "mmqz",
-      "version": "0.2.17",
-      "changelog": "Paste lanes submit via in-page fetch — no more dead-page navigation after pasting a lane URL.",
-      "repository": "https://github.com/mmqz/cpa-multi-plugins",
-      "homepage": "https://github.com/mmqz/cpa-multi-plugins/tree/main/plugins/mimo",
-      "license": "MIT",
-      "platforms": [
-        "darwin-amd64",
-        "darwin-arm64",
-        "linux-amd64",
-        "linux-arm64",
-        "windows-amd64"
-      ],
-      "tags": [
-        "Provider",
-        "OAuth",
-        "MiMo",
-        "Xiaomi"
-      ]
+      "platforms": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"],
+      "tags": ["Provider", "OAuth", "Trae", "CheckIn"]
     }
   ]
 }

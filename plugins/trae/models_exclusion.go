@@ -11,6 +11,7 @@
 package main
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -72,16 +73,23 @@ func applyExcludedSet(models []pluginapi.ModelInfo, excluded []string) []plugina
 	if len(excluded) == 0 || len(models) == 0 {
 		return models
 	}
-	excludeSet := make(map[string]struct{}, len(excluded))
-	for _, m := range excluded {
-		excludeSet[m] = struct{}{}
+	patterns := make([]*regexp.Regexp, 0, len(excluded))
+	for _, pattern := range excluded {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		patterns = append(patterns, regexp.MustCompile("^"+strings.ReplaceAll(regexp.QuoteMeta(pattern), `\*`, ".*")+"$"))
 	}
 	out := make([]pluginapi.ModelInfo, 0, len(models))
 	for _, m := range models {
-		if _, skip := excludeSet[strings.ToLower(m.ID)]; skip {
-			continue
+		skip := false
+		for _, pattern := range patterns {
+			if pattern.MatchString(strings.ToLower(m.ID)) {
+				skip = true
+				break
+			}
 		}
-		out = append(out, m)
+		if !skip {
+			out = append(out, m)
+		}
 	}
 	return out
 }

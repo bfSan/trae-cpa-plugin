@@ -45,12 +45,14 @@ func driveListenerLogin(t *testing.T, state string, query string) string {
 		variant:      variantCN,
 		state:        state,
 		loginTraceID: state,
+		codeVerifier: strings.Repeat("v", 43),
 		expires:      time.Now().Add(time.Minute),
 		authDir:      dir,
 		listener:     ln,
 		cbURL:        "http://" + ln.Addr().String() + "/authorize",
 	}
 	loginStates.Store(state, lc)
+	t.Cleanup(func() { loginStates.Delete(state); ln.Close() })
 	go acceptCallback(state)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -82,8 +84,8 @@ func TestListenerCallbackArmsSelfCompleteCN(t *testing.T) {
 	}
 
 	waitForGraceCompletion(t, func() bool {
-		_, live := loginStates.Load(state)
-		return !live
+		_, done := lookupLoginOutcome(state)
+		return done
 	})
 	o, ok := waitForOutcome(t, state)
 	if !ok {
@@ -94,7 +96,7 @@ func TestListenerCallbackArmsSelfCompleteCN(t *testing.T) {
 	}
 	// v0.12.74：selfCompleteCN 先回显 lc.err —— outcome 必须携带真实回调错误，
 	// 而不是误导性的「no authCode/refreshToken after restore」。
-	if !strings.Contains(o.msg, "access_denied") {
+	if !strings.Contains(o.msg, "callback rejected") {
 		t.Fatalf("outcome message must carry the real callback error, got %q", o.msg)
 	}
 	t.Cleanup(func() {
@@ -146,6 +148,7 @@ func TestListenerCallbackArmsSelfCompleteIntl(t *testing.T) {
 		cbURL:        "http://" + ln.Addr().String() + "/authorize",
 	}
 	intlloginStates.Store(state, lc)
+	t.Cleanup(func() { intlloginStates.Delete(state); ln.Close() })
 	go intlacceptCallback(state)
 
 	conn, err := net.Dial("tcp", ln.Addr().String())
@@ -164,8 +167,8 @@ func TestListenerCallbackArmsSelfCompleteIntl(t *testing.T) {
 	}
 
 	waitForGraceCompletion(t, func() bool {
-		_, live := intlloginStates.Load(state)
-		return !live
+		_, done := lookupLoginOutcome(state)
+		return done
 	})
 	o, ok := waitForOutcome(t, state)
 	if !ok {
@@ -174,7 +177,7 @@ func TestListenerCallbackArmsSelfCompleteIntl(t *testing.T) {
 	if o.ok {
 		t.Fatalf("error callback must settle as a failure outcome: %+v", o)
 	}
-	if !strings.Contains(o.msg, "access_denied") {
+	if !strings.Contains(o.msg, "callback rejected") {
 		t.Fatalf("intl outcome message must carry the real callback error, got %q", o.msg)
 	}
 	t.Cleanup(func() {

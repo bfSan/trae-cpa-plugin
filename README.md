@@ -1,142 +1,83 @@
-# cpa-multi-plugins
+# trae-cpa-plugin
 
-Provider plugins for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). Each plugin merges the regional variants of one provider family behind a single identifier and compiles to a C-shared library (`.so` / `.dll` / `.dylib`) for linux amd64/arm64, darwin amd64/arm64 and windows amd64.
+[CLIProxyAPI (CPA)](https://github.com/router-for-me/CLIProxyAPI) 的 Trae 插件，统一覆盖 **CN、SOLO CN、Intl**。本仓库只构建、测试与发布 Trae，不再打包其他渠道插件。
 
-| Plugin | Version |
-| --- | --- |
-| workbuddy | 0.9.62 |
-| trae | 0.12.78 |
-| qoder | 0.8.64 |
-| zcode | 0.2.1 |
-| mimo | 0.2.17 |
+## 职责边界
 
-Tagged commits are built by CI; per-platform artifacts are attached to each [release](../../releases). Release notices are also posted to the [Telegram channel](https://t.me/+hI7SCfhLF-YwMDUx).
+- **Trae**：上游协议、设备身份及签名、OAuth 与凭证维护、签到确认、真实额度与模型能力信息、当前账号请求执行。
+- **staged-scheduler / CPA**：账号池管理、层级分发、优先级、成本排序、轮换、跨账号选择与故障转移。
+- Trae 不持有策略账号池，不按余额选账号、不轮换账号、不设置四档策略冷却。兼容 `scheduler.pick` 仅返回不接管。
+- 配额观察只记录上游拒绝的账号/模型事实；不是余额排序器。零余额不会自动禁用或删除凭证，手动解除观察也不会撤销人工禁用。
 
-## Plugin stores / update feeds (issue #39)
+## 功能
 
-[`registry.json`](registry.json) is the machine-readable feed for stores and updaters — fetch the raw file at
-`https://raw.githubusercontent.com/mmqz/cpa-multi-plugins/main/registry.json` (schema v2):
+- **三渠道 OAuth**：保留各自 ClientID、PKCE、设备密钥、DeviceProof 与回调协议。面板提供直接登录入口和远程回调粘贴，不使用要求通用 `state/code` 的错误入口。
+- **登录恢复**：按会话保存阶段检查点；已获取 token 后，身份查询或保存失败可重试。安全存储有数量、大小、TTL、权限与原子写限制；不会承诺跨上游和本地磁盘的严格 exactly-once。
+- **签到**：仅 CN/SOLO；手动、自动、重试使用同账号互斥。只有明确确认才显示已签；不确定领取只核实、不盲目再次提交。没有签到历史界面。
+- **凭证维护**：通过宿主当前凭证清单和物理状态维护；人工禁用、删除、已有扩展字段受保护。奖励配置不作为可花余额。
+- **统一网络出口**：OAuth、Token 刷新、签到、余额、模型和聊天遵循同一代理策略。显式代理失败不降级直连，已经尝试的宿主桥请求失败不重新直发。
+- **模型与账号面板**：CN/SOLO/Intl 分列、真实上下文、账号差异、排序、隐藏/恢复、重命名和禁用管理。隐藏沿用宿主 `oauth-excluded-models`，没有第二份冲突配置。
+- **真实能力边界**：未上报的倍率和思考默认值不猜测；单个上下文长度不伪装成可切换档位。`max_tokens` 是输出预算，不是输入上下文承诺。默认标签不加粗，只有真正选中项才高亮加粗。
 
-- per-plugin `version` (kept in lockstep with each `plugins/<id>/VERSION` by CI guards), `changelog` one-liner for the update prompt, `platforms`, and `split_channels` for the legacy per-variant ids;
-- top-level `downloads.unified` / `downloads.split` with stable `releases/latest/download/<asset>.zip` URLs for all five platforms — every zip bundles all five plugins;
-- `homepage` / `repository` / `license` / `tags` for store listing metadata;
-- **CLIProxyAPI plugin store**: since v0.8.74 every release also carries per-plugin zips named `{plugin_id}_{version}_{goos}_{goarch}.zip` (exactly one dynamic library at zip root) plus a `checksums.txt` — the naming and layout the CPA store client resolves from the `repository` field. Add the registry as a store source and install/update plugins individually from the management panel:
+## 安装与配置
 
-  ```yaml
-  plugins:
-    enabled: true
-    store-sources:
-      - "https://raw.githubusercontent.com/mmqz/cpa-multi-plugins/main/registry.json"
-  ```
+从本仓库 Release 下载 `trae_<version>_<goos>_<goarch>.zip`。解压后仅安装当前平台的 Trae 动态库：
 
-Version bumps are one command — `cd tools/registry && go run . sync` rewrites the registry versions and this README's table from `plugins/*/VERSION`; the lockstep guards (`go test ./...` in the same directory, wired into the CI `test` job) keep a half-synced registry out of main.
+```yaml
+plugins:
+  enabled: true
+  dir: plugins
+  configs:
+    trae:
+      enabled: true
+      login_variant: cn       # 新登录的默认类型；已有账号维持自己的渠道
+      checkin_auto: true
+      token_keepalive: true
+      # proxy-url: http://127.0.0.1:7890
+      # callback_bind: 127.0.0.1
+      # callback_port: "41890"
+      # model_order: [model-a, model-b]
+```
 
-## Protocol Sources
+空 `proxy-url` 继承 CPA 宿主网络路径；非法显式代理配置会阻止出站请求，不让插件悄悄直连。当前宿主桥不提供完整逐请求 deadline/redirect 控制，不能把插件侧超时误称为端到端硬超时。
 
-The code in this repository is adapted and organized from the upstream reference repositories listed below. The protocol layer of every plugin is implemented from the code facts of these open-source projects, and each plugin marks its protocol source file paths for traceability and for following future protocol changes.
+商店源：
 
-### Primary protocol sources
+```text
+https://raw.githubusercontent.com/bfSan/trae-cpa-plugin/main/registry.json
+```
 
-| Project | Language | Protocol contribution | Used by plugins |
-|---|---|---|---|
-| **[Sliverkiss/traework2api](https://github.com/Sliverkiss/traework2api)** | Go | Trae SOLO CN protocol layer (auth/upstream/pool/scheduler) | trae |
-| **[Sliverkiss/cpa-plugin](https://github.com/Sliverkiss/cpa-plugin)** | Go | WorkBuddy + QoderWork full CPA plugins (v0.8.5 / v0.2.6) | workbuddy, qoder |
-| **[OmniRoute](https://github.com/diegosouzapw/OmniRoute)** | TypeScript | Trae Intl Web SOLO remote protocol (trae.ts)<br>CodeBuddy CN content filter bypass (codebuddy-cn.ts)<br>CodeBuddy CN/Intl executor | trae, workbuddy |
-| **[9router](https://github.com/decolua/9router)** | JavaScript | Trae three-region switching (regions: cn/sg/us)<br>Trae Intl chat_sessions/events SSE | trae |
-| **[cockpit-tools](https://github.com/jlcodes99/cockpit-tools)** | Rust | Trae v2 credits pack priority (apply_usage_response)<br>Trae 4-variant differences (TraePlatformKind)<br>CodeBuddy CN check-in state machine (workbuddy_auto_checkin.rs)<br>CodeBuddy CN check-in field parsing (codebuddy_cn_oauth.rs)<br>Trae check-in API headers (x-app-type, Origin, Referer) | trae, workbuddy |
-| **[linguo2625469/workbuddy2api-panel](https://github.com/linguo2625469/workbuddy2api-panel)** | Go | WorkBuddy `/v3/config` dual-path model catalog discovery (enterprise endpoint owns ordering + v3 supplements capabilities/exclusive entries)<br>nonChatModel non-chat model filtering | workbuddy |
-| **[corrinehu/dsh-workbuddy-connect](https://github.com/corrinehu/dsh-workbuddy-connect)** | TypeScript | `/v3/config` per-client-identity catalog split, field-verified (CLI roster vs App roster, split is load-bearing) | workbuddy |
-| **[maiphucgiang/codebuddy2api](https://github.com/maiphucgiang/codebuddy2api)** | Python | CodeBuddy intl dual-product identity (intl-cli/intl-work) catalog sharing derivation + CLI X-IDE-* identity headers + auto↔default-model intl alias | workbuddy |
-| **[ThinkofRain1213/deepseek-harness-codearts](https://github.com/ThinkofRain1213/deepseek-harness-codearts)** | TypeScript | `buddy.ts` isChatModel filtering + supportsImages three-state<br>image_url/data URI image path, field-verified | workbuddy |
-| **[Ttungx/trae-solo-local-api](https://github.com/Ttungx/trae-solo-local-api)** | TypeScript | Trae upstream has no native thinking param / agent-field 4023, field-tested (body whitelist basis)<br>image_url multimodal passthrough, field-verified | trae |
-| **[TriDefender/zcode-api](https://github.com/TriDefender/zcode-api)** | TypeScript | ZCode GLM coding-plan proxy — OAuth relay login / V4 signing / identity headers (g6n/TV) / billing plane / model catalog | zcode |
-| **[zai-org/ZCode](https://github.com/zai-org/ZCode)** | TypeScript | ZCode official open-source client (account-level wire protocol shapes only): start-plan anthropic translation layer + official system blocks + full business error code table (M2)<br>off-peak ticketing five-endpoint wire contract + queue/void decisions (M3) | zcode |
-| **[router-for-me/CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)** | Go | CPA plugin SDK (examples/plugin/{executor,auth}/go/)<br>pluginapi / pluginabi type definitions | all plugins |
+**更新已加载的动态库时，不得原地覆盖文件内容**：写到同目录临时文件，原子换名（新 inode），重启 CPA，并验证插件注册版本、加载 inode 和健康状态。不要同时安装统一插件与同渠道的旧拆分插件。
 
-### Per-plugin source files
+## 开发与构建
 
-#### `plugins/workbuddy` (forked from Sliverkiss/cpa-plugin/workbuddy v0.8.5)
-- **Protocol layer**: all 30+ Go files of `Sliverkiss/cpa-plugin/workbuddy/` (MIT)
-- **Content filter bypass**: `OmniRoute/open-sse/executors/codebuddy-cn.ts` lines 149-202 (AGENT_PATTERN + length fallback + reasoning_summary mirroring + large tool-description compression)
-- **Check-in state machine**: `cockpit-tools/src-tauri/src/modules/workbuddy_auto_checkin.rs` lines 33-64, 406-754 (WorkbuddyAutoCheckinConfig + exponential backoff scheduler)
-- **Check-in field parsing**: `cockpit-tools/src-tauri/src/modules/codebuddy_cn_oauth.rs` lines 1208-1258, 1285-1394, 1423-1587 (full CheckinStatusResponse fields + fallback paths)
-- **Dual-path model discovery**: `linguo2625469/workbuddy2api-panel` nonChatModel + `/v3/config` probing (absorbed in v0.12.51: enterprise endpoint owns ordering, v3 supplements capabilities and exclusive entries, single-path failure degrades to the other path)
-- **isChatModel filtering + supportsImages**: `ThinkofRain1213/deepseek-harness-codearts` `buddy.ts` (nes-/completion-/codewise- prefixes, maxOutput<=256, text-to-image tags excluded; capabilities surfaced to model metadata)
-- **Catalog identity split (v0.9.35)**: `corrinehu/dsh-workbuddy-connect` `/v3/config` CLI/App dual-roster field tests + `maiphucgiang/codebuddy2api` intl-cli/intl-work dual-product identity and CLI X-IDE-* headers + `linguo2625469/workbuddy2api-panel` CLI UA union probing and /v2 enterprise endpoint family (absorbed in 0.9.35: union probing of both identities, IDE roster fields authoritative)
+需要 Go 1.26+、C 编译器、Node.js（面板测试）与 Python 3（打包）。
 
-#### `plugins/codebuddy-cn` merged into `plugins/workbuddy` (v0.9.0)
-- Same backend and credit pool (copilot.tencent.com); only login platform (CLI/ide) and X-IDE-* request headers differ
-- After the merge, the `login_platform` config selects the new login flavor (CLI default / ide)
-- Legacy `codebuddy-cn-<uid>.json` auth files are adopted as `workbuddy-<uid>.json` at startup (loginPlatform=ide)
-- Reference: `cockpit-tools/src-tauri/src/modules/codebuddy_cn_oauth.rs:8` platform parameter
+```bash
+make -C plugins/trae test
+make -C plugins/trae lint
+./scripts/build.sh linux amd64
+```
 
-> ℹ️ Family merges since v0.10.0–v0.12.0: codebuddy-intl into workbuddy, qoder-cn/qoder-intl into qoder, trae-cn/trae-solo-cn/trae-intl into trae. The notes below are historical source attributions.
+默认测试只使用 mock、临时目录和 loopback HTTP。真实上游探针位于 `live` build tag 后且需要显式环境开关，不属于发布验证。
 
-#### `plugins/codebuddy-intl` (adapted from workbuddy — merged into workbuddy)
-- Same as workbuddy
-- **Global host**: `www.codebuddy.ai` (vs CN `www.codebuddy.cn` / `copilot.tencent.com`)
-- Reference: `OmniRoute/open-sse/config/providers/registry/codebuddy-intl/` (if present)
+目录：
 
-#### `plugins/trae-cn` (based on traework2api + cockpit-tools)
-- **Protocol layer**: all Go files of `Sliverkiss/traework2api/internal/{auth,upstream,pool,scheduler}/` (MIT)
-- **client_id**: `ono9krqynydwx5` (non-solo, aligned with cockpit-tools `trae_account_platform_storage.rs:185`)
-- **function**: `inline_chat` (aligned with cockpit-tools `trae_account_platform_storage.rs`; ⚠️ deviating since v0.12.79: llm_utils_chat only accepts `solo_work_lite`, all cn/merged variants now send that value — issue #9)
-- **Check-in headers**: `cockpit-tools/src-tauri/src/modules/trae_account_token_injection.rs:2761,2859` (x-app-type: trae, Origin: https://www.trae.cn, Referer: https://www.trae.cn/)
-- **v2 credits pack priority**: `cockpit-tools/src-tauri/src/modules/trae_account_token_injection.rs:1807-1866` (apply_usage_response)
-- **pack product_type mapping**: `cockpit-tools/src/types/trae.ts:174-189` (TRAE_PRODUCT_TYPE)
+- `plugins/trae/`：CPA 接口、管理面板和维护逻辑。
+- `plugins/trae/auth/`：凭证格式与稳定身份。
+- `plugins/trae/upstream/`：CN/SOLO 协议。
+- `plugins/trae/intlupstream/`：Intl Web SOLO 协议。
+- `plugins/trae/netroute/`：统一网络出口，不涉及账号选择。
+- `docs/`：协议来源和可靠性/职责边界。
 
-#### `plugins/trae-solo-cn` (based on traework2api)
-- Same as trae-cn
-- **client_id**: `en1oxy7wnw8j9n` (SOLO stable, aligned with traework2api + cockpit-tools)
-- **function**: `solo_work_lite` (aligned with traework2api `internal/upstream/constants.go`)
+## 上游与许可证
 
-#### `plugins/trae-intl` (based on OmniRoute + 9router)
-- **Protocol layer**: `OmniRoute/open-sse/executors/trae.ts` (482-line TS → Go translation)
-- **Three-region config**: `9router/open-sse/providers/registry/trae.js` (regions: {cn, sg, us}, defaultRegion: "cn")
-- **Web SOLO remote protocol**: `core-normal.trae.ai/api/remote/v1/chat_sessions` + `events` SSE
-- **mode/strategy parsing**: `OmniRoute/open-sse/executors/trae.ts` resolveMode ("work"/"auto"/concrete model name)
-- **plan_item text accumulation**: `OmniRoute/open-sse/executors/trae.ts` renderNewText (cumulative, longest-wins per plan_item.id)
-- **OAuth**: `api.marscode.com/cloudide/api/v3/trae/` + `ExchangeToken`
-- **v1 pay endpoint**: `grow-normal.trae.ai/trae/api/v1/pay/ide_user_*` (CN uses v2, Intl uses v1)
+本项目基于 [mmqz/cpa-multi-plugins](https://github.com/mmqz/cpa-multi-plugins) 中的 Trae 实现独立维护，保留 Git 历史及 MIT 许可证。协议来源包括：
 
-#### `plugins/qoder-cn` (forked from Sliverkiss/cpa-plugin/qoderwork v0.2.6)
-- **Protocol layer**: all 28 Go files of `Sliverkiss/cpa-plugin/qoderwork/` (MIT)
-- **COSY signing**: `qoderwork/sign.go` (220 lines) + `encoding.go` (53 lines)
-- **Check-in**: `qoderwork/checkin.go` (`openapi.qoder.com.cn/sash/api/v1/me/daily-check-in/{status,claim}`)
-- **PAT import**: `qoderwork/oauth.go` (`openapi.qoder.com.cn/api/v1/jobToken/exchange`)
-- **v0.8.45 (official desktop client v0.4.3 asar forensics)**: the legacy qoderwork IDE-plugin constants (client_id `1c5e33e1-...` for CN, `e883ade2-...` for Intl, `qoder-work-cn://` / `qoder://aicoding...` redirects, `qoder.com.cn` auth host) were reverse-engineered from the OLD qoderwork IDE plugin, NOT the official desktop client. Both the CN RPM (`Qoder-CN-linux-x86_64.rpm`, asar `out/main/index.js` Vpe config block) and the Intl RPM (`Qoder-linux-x86_64.rpm`, same Vpe shape) reveal the official v0.4.3 desktop client uses ONE unified protocol across both regions:
-  - **client_id** = `732aef47-9cf2-46a2-95fe-4cebb5d0d1fa` (shared CN+Intl)
-  - **biz_variant** = `qoder` (wraps the `selectAccounts` URL in `/users/sign-in?biz_variant=qoder&oauth_callback=...`)
-  - **authBaseUrl (CN)** = `https://qoder.cn` (NOT `qoder.com.cn` — that's the legacy qoderwork IDE domain)
-  - **authBaseUrl (Intl)** = `https://qoder.com`
-  - **redirect_uri (CN)** = null → OMITTED from the URL (the Sft builder's `...t.redirectUri?{redirect_uri:t.redirectUri}:{}` drops the param)
-  - **redirect_uri (Intl)** = `qoder-app://`
-  - The official newbie grant (14-day Pro trial + 300 credits) fires SERVER-SIDE on the desktop-client login event; the legacy qoderwork IDE login never triggers it — root cause of "qoder cn/init 无法签到也无法领取首登录奖励"
-  - Both CN and Intl now build the desktop URL by default; the v0.8.40 Intl-only `login_dialect=desktop` opt-in is a deprecated no-op
+- [Sliverkiss/traework2api](https://github.com/Sliverkiss/traework2api)：Trae CN/SOLO 协议基础。
+- [cockpit-tools](https://github.com/jlcodes99/cockpit-tools)：渠道身份、签到、额度字段语义。
+- [OmniRoute](https://github.com/diegosouzapw/OmniRoute)、[9router](https://github.com/decolua/9router)：Intl Web SOLO 会话与事件流。
+- [Ttungx/trae-solo-local-api](https://github.com/Ttungx/trae-solo-local-api)：CN 请求字段兼容性参考。
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)：插件 SDK 与宿主接口。
 
-#### `plugins/qoder-intl` (adapted from qoderwork)
-- Same as qoder-cn
-- **host**: `openapi.qoder.sh` / `api3.qoder.sh` (vs CN `openapi.qoder.com.cn` / `gateway.qoder.com.cn`); auth base `qoder.com` (vs CN `qoder.cn`)
-- **client_id**: `732aef47-9cf2-46a2-95fe-4cebb5d0d1fa` (shared with CN since v0.8.45 — both regions present as the official desktop client v0.4.3)
-- **redirect_uri**: `qoder-app://` (vs CN `""` — omitted from URL)
-- **biz_variant wrapper**: `/users/sign-in?biz_variant=qoder&oauth_callback=<selectAccounts URL>` (same as CN since v0.8.45)
-- **check-in**: ✅ via campaigns system (the v0.8.18 "Intl has no check-in surface" note was retired in v0.12.80 when CN joined Intl on the campaigns dialect)
-
-#### `plugins/zcode` (clean-room from TriDefender/zcode-api + zai-org/ZCode)
-- **Behavior baseline (closed-source imitation)**: `TriDefender/zcode-api/src/{auth/oauth.ts, proxy/identity.ts, proxy/client-signing.ts, proxy/upstream.ts, server/routes-quota.ts}` (OAuth relay login / g6n+TV identity headers / full V4 signing / billing plane)
-- **KeyResolver credential chain (M1.1)**: `TriDefender/zcode-api/src/auth/resolver.ts` + the official open-source `apps/zcode-cli/.../coding-plan-api-key.ts` (the two implementations are line-by-line isomorphic = account-level API): `z/login → getCustomerInfo → api_keys → copy` terminal state `{apiKeyId}.{apiKeySecret}`
-- **start-plan anthropic translation layer (M2)**: official open-source `translator/openai-to-anthropic.ts` + `translator/sse-translator.ts` + `proxy/system-prompt.ts` + `zcode_system.json` (3 official blocks verbatim) + `proxy/body-transformer.ts` (system hoisting / context_prefix / metadata / cache_control normalization) + `failure-provider-business-codes.ts` (full business code table)
-- **off-peak ticketing (M3)**: official open-source `packages/services/src/session/offPeakServerClient.ts` (five-endpoint wire contract) + `offPeakRuntimeModel.ts` (dual credential headers) + `offPeakTaskService.ts` (state machine / resume) + `off-peak-types.ts` + `offpeak-retry.ts` (queue / void decisions)
-- ⚠ Open-source adoption policy: the official open-source build is a reduced form (no V4 signing / captcha solving / claim chain; ultra gateway alternate channel) — only the account-level wire protocol shapes are taken, not behavior; see the zcode section in docs/PROTOCOL.md
-
-### Protocol fact sheet
-
-The complete protocol fact list lives in [docs/PROTOCOL.md](docs/PROTOCOL.md) (endpoints, headers, body formats, field parsing, state machines).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Disclaimer
-
-The code in this repository is adapted from the upstream reference repositories listed above and is provided for mirroring purposes only.
+[历史协议来源说明](docs/PROTOCOL.md)可能包含上游多插件仓库的旧记录，不代表本 fork 当前发布范围。许可证见 [LICENSE](LICENSE)。

@@ -43,8 +43,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 // livePayFamily probes ent_usage + pay_status + CheckLogin + checkin status

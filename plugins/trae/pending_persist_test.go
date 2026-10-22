@@ -57,7 +57,7 @@ func TestPendingPersistRoundtrip(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, pendingLoginFileName)); err != nil {
 		t.Fatalf("file missing: %v", err)
 	}
-	clearPendingLogin(dir)
+	clearPendingLogin(dir, rec.State)
 	if _, ok := loadPendingLogin(dir); ok {
 		t.Fatalf("load succeeded after clear")
 	}
@@ -72,7 +72,7 @@ func TestPendingPersistTTLExpiry(t *testing.T) {
 	if _, ok := loadPendingLogin(dir); ok {
 		t.Fatalf("expired record must not load")
 	}
-	if _, err := os.Stat(filepath.Join(dir, pendingLoginFileName)); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, pendingLoginFileName, oauthPendingName(rec.State))); !os.IsNotExist(err) {
 		t.Fatalf("expired record must be removed on load")
 	}
 }
@@ -146,6 +146,13 @@ func TestSubmitAfterRestartRestoresPending(t *testing.T) {
 	rec.AuthDir = dir
 	persistPendingLogin(rec)
 
+	// Restore synchronously and suppress detached self-completion for this
+	// callback plumbing test; exchange/save are tested using mocks separately.
+	if restorePendingLoginState(state) != state {
+		t.Fatal("restore failed")
+	}
+	restored, _ := loginStates.Load(state)
+	restored.(*loginCtx).Owner = "host"
 	body := handleOAuthSubmitResource(pluginapi.ManagementRequest{
 		Method: "POST",
 		Body:   []byte(`{"url":` + mustJSON(realFormRedirectURL(state)) + `}`),
@@ -160,24 +167,7 @@ func TestSubmitAfterRestartRestoresPending(t *testing.T) {
 	if lc := v.(*loginCtx); lc.authCode != "REAL-FORM-CODE-1" {
 		t.Fatalf("restored ctx authCode: %+v", lc)
 	}
-	// v0.12.76: the restored login's background self-completion now persists
-	// the stable device identity (.trae-device-identity-*.json) into the same
-	// dir BEFORE its (real-network) exchange — wait for that write to land so
-	// t.TempDir's RemoveAll never races a concurrent file creation
-	// (ENOTEMPTY). Waiting for the file suffices: after it the goroutine only
-	// ever DELETES files (pending login cleanup), which RemoveAll tolerates.
-	identitySeen := false
-	identityDeadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(identityDeadline) {
-		if _, err := os.Stat(deviceIdentityPath(dir, variantCN)); err == nil {
-			identitySeen = true
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if !identitySeen {
-		t.Logf("device identity file did not appear within 3s — background self-completion may still race TempDir cleanup")
-	}
+
 	loginStates.Delete(state)
 }
 
@@ -351,39 +341,16 @@ func waitForOutcome(t *testing.T, state string) (loginOutcome, bool) {
 // (which fails fast and cleanly on an empty token capture) and surface the
 // failure through the outcome cache instead of stalling silently.
 func TestLiveLoginSelfCompletesAfterGrace(t *testing.T) {
-	prevGrace := loginSelfCompleteGrace
-	loginSelfCompleteGrace = 80 * time.Millisecond
-	t.Cleanup(func() { loginSelfCompleteGrace = prevGrace })
-
-	dir := t.TempDir()
-	state := "grace-live-cn-1"
-	lc := &loginCtx{
-		variant: variantCN, state: state, loginTraceID: state,
-		expires: time.Now().Add(time.Minute), authDir: dir,
+	lc := &loginCtx{state: "grace-live-cn-1", variant: variantCN, expires: time.Now().Add(time.Minute)}
+	loginStates.Store(lc.state, lc)
+	defer loginStates.Delete(lc.state)
+	selfCompleteCNAfterGrace(lc, 0)
+	if !stateIsLive(lc.state) {
+		t.Fatal("missing callback must retain pending state")
 	}
-	loginStates.Store(state, lc)
-	spawnSelfCompleteCN(lc)
-
-	waitForGraceCompletion(t, func() bool {
-		_, live := loginStates.Load(state)
-		return !live
-	})
-	o, ok := waitForOutcome(t, state)
-	if !ok || o.ok {
-		t.Fatalf("outcome not recorded as failure: %+v (ok=%v)", o, ok)
+	if lc.ExchangeStarted {
+		t.Fatal("must not exchange without callback")
 	}
-	if !strings.Contains(o.msg, "no authCode/refreshToken") {
-		t.Fatalf("unexpected outcome message: %q", o.msg)
-	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Fatalf("no credential file expected on the fail-fast path, found %d entries", len(entries))
-	}
-	t.Cleanup(func() {
-		outcomeCache.Lock()
-		delete(outcomeCache.m, state)
-		outcomeCache.Unlock()
-	})
 }
 
 // Live login consumed by the host poll DURING the grace window: the
@@ -430,29 +397,14 @@ func TestLiveLoginGraceYieldsToHostPoll(t *testing.T) {
 
 // Intl mirror of the live grace test.
 func TestLiveLoginSelfCompletesAfterGraceIntl(t *testing.T) {
-	prevGrace := loginSelfCompleteGrace
-	loginSelfCompleteGrace = 80 * time.Millisecond
-	t.Cleanup(func() { loginSelfCompleteGrace = prevGrace })
-
-	state := "grace-live-intl-1"
-	lc := &intlloginCtx{
-		state: state, loginTraceID: state,
-		expires: time.Now().Add(time.Minute),
+	lc := &intlloginCtx{state: "grace-live-intl-1", expires: time.Now().Add(time.Minute)}
+	intlloginStates.Store(lc.state, lc)
+	defer intlloginStates.Delete(lc.state)
+	selfCompleteIntlAfterGrace(lc, 0)
+	if !stateIsLive(lc.state) {
+		t.Fatal("missing callback must retain pending state")
 	}
-	intlloginStates.Store(state, lc)
-	spawnSelfCompleteIntl(lc)
-
-	waitForGraceCompletion(t, func() bool {
-		_, live := intlloginStates.Load(state)
-		return !live
-	})
-	o, ok := waitForOutcome(t, state)
-	if !ok || o.ok || !strings.Contains(o.msg, "no authCode") {
-		t.Fatalf("intl outcome wrong: %+v (ok=%v)", o, ok)
+	if lc.ExchangeStarted {
+		t.Fatal("must not exchange without callback")
 	}
-	t.Cleanup(func() {
-		outcomeCache.Lock()
-		delete(outcomeCache.m, state)
-		outcomeCache.Unlock()
-	})
 }

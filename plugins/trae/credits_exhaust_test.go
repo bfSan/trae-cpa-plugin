@@ -2,11 +2,8 @@ package main
 
 import (
 	"testing"
-	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/pool"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 // TestQuotaExhaustedKnown pins the trust boundary of the proactive
@@ -59,29 +56,5 @@ func TestQuotaExhaustedKnown(t *testing.T) {
 		if got := quotaExhaustedKnown(tc.sum); got != tc.want {
 			t.Errorf("%s: quotaExhaustedKnown = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-}
-
-// TestApplyCooldownOnPlanLimitMidnightWindow: the 1005/4008 path now cools
-// until the next local midnight, not a fixed 12h — the resume instant the
-// panel reports must be midnight and inside the next 24h.
-func TestApplyCooldownOnPlanLimitMidnightWindow(t *testing.T) {
-	p := pool.New("")
-	p.Add(&auth.Auth{UID: "u-mid"})
-	applyCooldownOn(p, "u-mid", upstream.ErrPlanLimit)
-
-	st, ok := p.Status("u-mid")
-	if !ok || !st.Cooling {
-		t.Fatalf("plan-limit error must cool the account (status=%+v ok=%v)", st, ok)
-	}
-	until := st.Until
-	if until.Hour() != 0 || until.Minute() != 0 {
-		t.Fatalf("resume instant %s must be local midnight", until)
-	}
-	if d := time.Until(until); d <= 0 || d > 24*time.Hour {
-		t.Fatalf("resume window %v out of (0, 24h]", d)
-	}
-	if got := p.Pick(); got != nil {
-		t.Fatal("cooled account must not be picked")
 	}
 }

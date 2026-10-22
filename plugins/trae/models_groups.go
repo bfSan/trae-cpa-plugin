@@ -1,32 +1,11 @@
-// models_groups.go — v0.12.63: per-variant model catalog endpoint for the
-// panel's model-exclusion picker (GET /plugins/trae/models/groups). Port of
-// the workbuddy v0.9.40 design onto trae's cn/solo/intl variant namespaces.
-//
-// Why: the HOST's global oauth-excluded-models page cannot offer candidate
-// lists for plugin channels (model-definitions/:channel is an upstream-static
-// 8-channel catalog; unknown channels 400 "unknown channel"), so excluding a
-// trae model there meant hand-typing suffixed ids. This endpoint serves the
-// catalog from the plugin's OWN knowledge — the per-credential model_cache
-// snapshots (v0.12.63) — grouped by variant namespace, and the panel renders
-// per-variant checkboxes that write the host's trae-<variant> sub-keys via
-// PATCH /v0/management/oauth-excluded-models. Consumption stays
-// host-config-shaped (models_exclusion.go), so the global page and this
-// picker drive the SAME exclusion map — no parallel truth, nothing
-// plugin-proprietary to persist.
-//
-// Read-only by default: groups are served from the newest model_cache
-// snapshot per variant (zero upstream calls). ?refresh=1 additionally runs
-// one live discovery per variant through the credential's own for_auth chain
-// (refresh → discover → snapshot → static), which also re-stamps the
-// snapshot — so what the picker shows and what the runtime advertises cannot
-// diverge. Excluded models stay listed (the snapshot is pre-exclusion), so
-// un-excluding never requires a lucky upstream round-trip.
+// Read-only management candidate union; never used as account authorization.
 package main
 
 import (
+	"encoding/json"
 	"net/http"
+	"sort"
 	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -54,8 +33,14 @@ func modelGroupVariantLabel(variant string) string {
 // modelGroupEntry is one catalog row. Name carries the display name when the
 // snapshot/discovery provided one.
 type modelGroupEntry struct {
-	ID   string `json:"id"`
-	Name string `json:"name,omitempty"`
+	ID             string   `json:"id"`
+	BaseID         string   `json:"base_id"`
+	Name           string   `json:"name,omitempty"`
+	ContextLength  int64    `json:"context_length,omitempty"`
+	ContextLengths []int64  `json:"context_lengths,omitempty"`
+	Credentials    int      `json:"credentials"`
+	Multiplier     *float64 `json:"multiplier"`
+	Thinking       any      `json:"thinking"`
 }
 
 // modelGroup is one variant's catalog as the panel picker consumes it.
@@ -72,14 +57,17 @@ type modelGroup struct {
 }
 
 type modelGroupsResponse struct {
-	Groups []modelGroup `json:"groups"`
-	Hint   string       `json:"hint"`
+	Groups        []modelGroup `json:"groups"`
+	Order         []string     `json:"model_order"`
+	CandidateOnly bool         `json:"candidate_only"`
+	Hint          string       `json:"hint"`
 }
 
 // variantCatalogEntry is one credential's contribution to a variant catalog scan.
 type variantCatalogEntry struct {
 	variant  string
 	hasToken bool
+	disabled bool
 	name     string // host file name — drives the refresh persist path
 	storage  []byte // physical credential document (read-only view)
 	snapshot *persistedModelCache
@@ -104,8 +92,13 @@ func handleModelGroupsQuery(req pluginapi.ManagementRequest) (int, any) {
 		// hostAuthListFn already filtered foreign owners; variant resolution
 		// mirrors persistedSnapshotForStorage's same-variant guard.
 		variant := sniffVariantFromJSON(phys)
+		var flags struct {
+			Disabled bool `json:"disabled"`
+		}
+		_ = json.Unmarshal(phys, &flags)
 		e := &variantCatalogEntry{
 			variant:  variant,
+			disabled: f.Disabled || flags.Disabled,
 			hasToken: strings.TrimSpace(extractTraeAccessToken(phys)) != "",
 			name:     f.Name,
 			storage:  phys,
@@ -122,84 +115,90 @@ func handleModelGroupsQuery(req pluginapi.ManagementRequest) (int, any) {
 	}
 	return http.StatusOK, modelGroupsResponse{
 		Groups: groups,
-		Hint:   "勾选=启用；取消勾选保存后该模型从渠道注册列表移除（ID 带渠道后缀）。与 CPA 全局页驱动同一份 oauth-excluded-models 配置。",
+		Order:  currentModelOrder(), CandidateOnly: true,
+		Hint: "勾选=启用；取消勾选保存后该模型从渠道注册列表移除（ID 带渠道后缀）。与 CPA 全局页驱动同一份 oauth-excluded-models 配置。",
 	}
 }
 
-// buildModelGroup resolves one variant's catalog: newest same-variant
-// snapshot first; with refresh=1 a live discovery (via the credential's
-// for_auth chain) takes precedence and re-stamps the snapshot. Never serves
-// a cross-variant snapshot.
+// buildModelGroup unions every same-variant account catalog for management.
+// Refresh is per credential; no account is treated as representative for peers.
 func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh bool) modelGroup {
-	g := modelGroup{
-		Realm:       variant,
-		Label:       modelGroupVariantLabel(variant),
-		Models:      []modelGroupEntry{},
-		Credentials: len(entries),
-	}
-
-	var best *persistedModelCache
+	g := modelGroup{Realm: variant, Label: modelGroupVariantLabel(variant), Models: []modelGroupEntry{}, Credentials: len(entries)}
+	// Every credential contributes its own catalog. A newer credential is not a
+	// representative for the region; aggregation here is candidate-only.
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
+	rows := map[string]*modelGroupEntry{}
+	ids := []string{}
 	for _, e := range entries {
-		if e.snapshot == nil {
-			continue
-		}
-		if best == nil || persistedFetchedAt(e.snapshot) > persistedFetchedAt(best) {
-			best = e.snapshot
-		}
-	}
-
-	if refresh {
-		if pick := pickRefreshCredential(entries); pick != nil {
-			models := refreshVariantCatalog(pick)
-			if len(models) > 0 {
-				g.Models = modelGroupEntries(models)
-				g.Count = len(g.Models)
-				g.Source = "refreshed"
-				g.FetchedAt = time.Now().UTC().Format(time.RFC3339)
-				return g
+		var models []pluginapi.ModelInfo
+		if e.snapshot != nil {
+			models = e.snapshot.Models
+			if g.Source != "queried" {
+				g.Source = "snapshot"
 			}
-			g.Note = "刷新未获得模型（上游失败或凭证无效）；以下为最近一次落盘目录"
+			if e.snapshot.FetchedAt > g.FetchedAt {
+				g.FetchedAt = e.snapshot.FetchedAt
+			}
+		}
+		if refresh && e.hasToken && !e.disabled {
+			if fresh := refreshVariantCatalog(e); len(fresh) > 0 {
+				models = fresh
+				// A refresh can legitimately return last-good; do not relabel it fresh.
+				g.Source = "queried"
+			}
+		}
+		seen := map[string]bool{}
+		for _, m := range modelGroupEntries(models) {
+			if seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			row := rows[m.ID]
+			if row == nil {
+				copy := m
+				row = &copy
+				row.BaseID = catalogBaseID(m.ID, variant)
+				rows[m.ID] = row
+				ids = append(ids, m.ID)
+			}
+			row.Credentials++
+			if m.ContextLength > 0 {
+				found := false
+				for _, n := range row.ContextLengths {
+					if n == m.ContextLength {
+						found = true
+					}
+				}
+				if !found {
+					row.ContextLengths = append(row.ContextLengths, m.ContextLength)
+				}
+			}
+		}
+	}
+	sort.Strings(ids)
+	ordered := make([]pluginapi.ModelInfo, 0, len(ids))
+	for _, id := range ids {
+		ordered = append(ordered, pluginapi.ModelInfo{ID: id})
+	}
+	for _, m := range applyModelOrder(ordered) {
+		row := rows[m.ID]
+		sort.Slice(row.ContextLengths, func(i, j int) bool { return row.ContextLengths[i] < row.ContextLengths[j] })
+		if len(row.ContextLengths) != 1 {
+			row.ContextLength = 0
 		} else {
-			g.Note = "无可用凭证，无法实时刷新"
+			row.ContextLength = row.ContextLengths[0]
 		}
+		g.Models = append(g.Models, *row)
 	}
-
-	if best != nil {
-		g.Models = modelGroupEntries(best.Models)
-		g.Count = len(g.Models)
-		g.Source = "snapshot"
-		g.FetchedAt = best.FetchedAt
+	g.Count = len(g.Models)
+	g.NeedsRefresh = g.Count == 0
+	if refresh {
+		g.Note = "已逐凭证查询（跳过禁用账号）；失败时仅保留各自最近目录，候选汇总不代表每个账号均有权限"
 	}
-	if len(g.Models) == 0 {
-		g.NeedsRefresh = true
-		if g.Note == "" {
-			g.Note = "暂无目录：该渠道还没有成功拉取过模型，点「刷新目录」试一次"
-		}
+	if g.Count == 0 {
+		g.Note = "尚无已验证目录；可刷新目录，不使用猜测的模型或其他账号权限"
 	}
 	return g
-}
-
-// pickRefreshCredential chooses the credential to drive a refresh with:
-// token-bearing first, then any entry — the for_auth chain answers from the
-// persisted snapshot even without a token, but a token gives it a real
-// chance at fresh discovery.
-func pickRefreshCredential(entries []*variantCatalogEntry) *variantCatalogEntry {
-	var any, withToken *variantCatalogEntry
-	for _, e := range entries {
-		if any == nil {
-			any = e
-		}
-		if !e.hasToken {
-			continue
-		}
-		if withToken == nil {
-			withToken = e
-		}
-	}
-	if withToken != nil {
-		return withToken
-	}
-	return any
 }
 
 // refreshVariantCatalog runs ONE live discovery for the picked credential
@@ -238,7 +237,7 @@ func modelGroupEntries(models []pluginapi.ModelInfo) []modelGroupEntry {
 		if strings.EqualFold(name, m.ID) {
 			name = ""
 		}
-		out = append(out, modelGroupEntry{ID: m.ID, Name: name})
+		out = append(out, modelGroupEntry{ID: m.ID, Name: name, ContextLength: m.ContextLength})
 	}
 	return out
 }

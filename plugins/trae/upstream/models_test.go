@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 // TestFetchModelsUserFacingFilter 锁定 v0.12.46 的目录过滤契约：

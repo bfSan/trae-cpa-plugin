@@ -4,7 +4,7 @@
 // api.trae.cn) as a cliproxy provider: Trae OAuth (GetLoginGuidance +
 // AuthCode ExchangeToken), Cloud-IDE-JWT auth, llm_utils_chat +
 // function=solo_work_lite chat executor, daily check-in via checkin_credits,
-// v2 credit API query, multi-account pool with credit-aware scheduler.
+// v2 quota observations and account-local maintenance (routing stays host-side).
 //
 // Protocol layer based on Sliverkiss/traework2api (MIT). Adapted to CPA
 // dynamic plugin C ABI with OAuth login flow, executor, scheduler, checkin,
@@ -80,10 +80,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/pool"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/scheduler"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -98,13 +96,7 @@ const (
 	// OAuth login flow timeout (5 min).
 	loginTTL = 15 * time.Minute
 
-	// Scheduler defaults.
-	// v0.12.39: 签到主循环改 0 点——官方签到奖励每日重置，0 点贴重置点
-	// 签到最稳妥；v0.12.41 修正归因：9074 主因是 req_source 与 token 产品
-	// 谱系错配（已在 client 层双探测修复），零点抢签+前密后疏退避仅作为
-	// 官方真·高峰限流的兑底（见 scheduler.go const 块注释）。宿主机时区应为
-	// CN 时区（auth 为 trae-solo-cn-* 的部署即如此）。
-	defaultCheckinHour = 0
+	// Maintenance defaults: daily check-in is 09:00 Asia/Shanghai; no startup catch-up.
 	defaultRefreshSkew = 24 * time.Hour
 
 	// Account cache TTL for credits/checkin status.
@@ -139,7 +131,7 @@ const (
 // version is injected at build time via -ldflags "-X main.version=...".
 // Keep the default in sync with the release tag: the shipped build.sh does
 // NOT inject it (only "-s -w"), so the plugin reports this literal value.
-var version = "0.12.78"
+var version = "0.13.0"
 
 var (
 	hostAPI *C.cliproxy_host_api
@@ -149,12 +141,6 @@ var (
 
 	// upstreamClient is the shared SOLO upstream client.
 	upstreamClient *upstream.Client
-
-	// accountPool is the multi-account pool with cooldown/disable state.
-	accountPool *pool.Pool
-
-	// sched is the daily check-in + token refresh scheduler.
-	sched *scheduler.Scheduler
 
 	// schedulerCtx cancels the scheduler on shutdown.
 	schedulerCtx    context.Context
@@ -175,7 +161,8 @@ type accountCacheEntry struct {
 	usageFilled bool
 	plan        string // 选中包的 plan 标签（与 usage 快照同批填充）
 	// v0.12.44: CheckLogin 探测快照（登录态 + 服务端绑定设备，9074 风控诊断）。
-	bind *bindStatus
+	bind                                         *bindStatus
+	usageObserved, checkinObserved, bindObserved time.Time
 }
 
 // bindStatus 汇总 CheckLogin 响应里与设备绑定健康相关的字段。
@@ -206,27 +193,20 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 		return 1
 	}
 	hostAPI = host
+	initTraeHTTPBridge()
 	C.store_host_api(host) // CRITICAL: store in C global for call_host_api wrapper
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
 	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
 	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
 
-	// Initialize upstream client + pool + scheduler.
+	// Initialize upstream clients and account-local maintenance.
 	upstreamClient = upstream.New()
 	// Intl variant has a parallel handler set (intl_main.go) whose client
 	// initializes as a package-level var there (was nil in v0.12.0-0.12.1:
 	// nil-receiver SIGSEGV on the first Intl RPC; fixed in v0.12.2).
-	accountPool = pool.New("") // state file optional; host persists auth
 	schedulerCtx, schedulerCancel = context.WithCancel(context.Background())
-	sched = scheduler.New(scheduler.Config{
-		Pool:         accountPool,
-		Upstream:     upstreamClient,
-		CheckinHour:  defaultCheckinHour,
-		RefreshHours: []int{3},
-		RefreshSkew:  defaultRefreshSkew,
-	})
-	go sched.Run(schedulerCtx)
+	go maintenanceRun(schedulerCtx)
 
 	// Janitor: sweep abandoned login states every minute to prevent listener leaks.
 	go func() {
@@ -336,7 +316,9 @@ func hostCall(method string, request []byte) ([]byte, error) {
 func handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		captureAuthDir(request)
 		configureVariant(request)
+		configureRuntime(request)
 		return okEnvelope(buildRegistration())
 
 	case pluginabi.MethodModelStatic:
@@ -450,7 +432,7 @@ type envelopeError struct {
 	// resultErrorFromError -> MarkResult uses for per-status cooldown
 	// policy (402->30m, 429->quota backoff, 401->30m). Without it every
 	// plugin failure looks status-less to the host and only gets the
-	// 1-minute transient cooldown, on top of the plugin-side pool.
+	// transient observations; routing and retry selection remain host-owned.
 	Message    string `json:"message"`
 	HTTPStatus int    `json:"http_status,omitempty"`
 }
@@ -488,6 +470,8 @@ func buildRegistration() registrationPayload {
 			GitHubRepository: "https://github.com/mmqz/cpa-multi-plugins",
 			Logo:             pluginLogoURL,
 			ConfigFields: []pluginapi.ConfigField{
+				{Name: "proxy-url", Type: pluginapi.ConfigFieldTypeString, Description: "Outbound proxy; empty inherits CPA host routing. Invalid configuration blocks HTTP without disabling the plugin."},
+				{Name: "model_order", Type: pluginapi.ConfigFieldTypeArray, Description: "Model display/advertisement order. Account routing is managed by staged/CPA, not this order."},
 				{Name: "checkin_auto", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Enable daily auto check-in at 09:00 local time (default true)."},
 				{Name: "login_variant", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"cn", "solo", "intl"}, Description: "Variant for NEW logins: cn (Trae Code CN, default), solo (Trae SOLO CN) or intl (Trae Intl, marscode.com). Existing accounts keep the variant recorded at login/adoption time."},
 				{Name: "app_version", Type: pluginapi.ConfigFieldTypeString, Description: "Client version the INTL login flow presents (default 3.5.66). The www.trae.ai authorization page rejects stale version strings — set the version the intl client currently reports when logins bounce with a version-mismatch page."},
@@ -538,36 +522,13 @@ func suffixModels(in []pluginapi.ModelInfo, suffix string) []pluginapi.ModelInfo
 }
 
 func handleModelStatic(raw []byte) ([]byte, error) {
-	// Advertise the UNION of all variant namespaces (used when no accounts
-	// are loaded, and for management UI model pickers). v0.12.79 (issue
-	// #9): cn and solo share the same solo_work_lite catalog, so the CN
-	// namespace is the solo list unsuffixed and the solo namespace the
-	// same list with "-solo"; intl keeps auto/work virtual + "-intl".
 	var req pluginapi.StaticModelRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return nil, err
 	}
-	out := make([]pluginapi.ModelInfo, 0, 24)
-	seen := make(map[string]bool, 24)
-	add := func(ms []pluginapi.ModelInfo) {
-		for _, m := range ms {
-			if m.ID == "" || seen[m.ID] {
-				continue
-			}
-			seen[m.ID] = true
-			out = append(out, m)
-		}
-	}
-	add(staticSoloModels())
-	add(suffixModels(staticSoloModels(), modelSuffixSolo))
-	add(intlstaticModels())
-	// v0.12.62: static advertisement honors the provider key (no credential
-	// context → no variant sub-key).
-	out = filterExcludedModels(out, req.Host)
-	return okEnvelope(pluginapi.ModelResponse{
-		Provider: providerName,
-		Models:   out,
-	})
+	// Candidate aggregation belongs to the management catalog, not authorization.
+	// An empty global catalog prevents a host fallback granting peer entitlements.
+	return okEnvelope(pluginapi.ModelResponse{Provider: providerName, Models: []pluginapi.ModelInfo{}})
 }
 
 func handleModelForAuth(request []byte) ([]byte, error) {
@@ -588,11 +549,10 @@ func handleModelForAuth(request []byte) ([]byte, error) {
 	// Try dynamic model fetch via the account's auth.
 	a, err := parseStoredAuth(req.StorageJSON)
 	if err != nil {
-		log.Printf("model.for_auth: parse storage failed (%v) — static fallback", err)
-		// Variant unknown — advertise the cn ∪ solo static union.
+		log.Printf("model.for_auth: parse storage failed (%v) — no account catalog", err)
 		return okEnvelope(pluginapi.ModelResponse{
 			Provider: providerName,
-			Models:   staticUnionModels(),
+			Models:   []pluginapi.ModelInfo{},
 		})
 	}
 	// v0.12.62: exclusions at BOTH granularities — the provider key
@@ -633,11 +593,11 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 	}
 	dynamic, err := fetchModelsFn(a)
 	if err != nil {
-		log.Printf("model.for_auth %s (%s): %v — persisted snapshot / static fallback", a.UID, a.Variant, err)
+		log.Printf("model.for_auth %s (%s): %v — own persisted snapshot / empty catalog", a.UID, a.Variant, err)
 		if snap, ok := persistedSnapshotForStorage(storageJSON, a.Variant); ok {
-			return snap
+			return applyModelOrder(snap)
 		}
-		return suffixModels(staticForVariant(a.Variant), suffix)
+		return []pluginapi.ModelInfo{}
 	}
 	out := make([]pluginapi.ModelInfo, 0, len(dynamic))
 	seen := make(map[string]bool, len(dynamic))
@@ -660,15 +620,15 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 	}
 	if len(out) == 0 {
 		if snap, ok := persistedSnapshotForStorage(storageJSON, a.Variant); ok {
-			return snap
+			return applyModelOrder(snap)
 		}
-		return suffixModels(staticForVariant(a.Variant), suffix)
+		return []pluginapi.ModelInfo{}
 	}
 	// v0.12.63: stamp the last-known-good catalog into the credential file
 	// (advertised ids, post-suffix, pre exclusion — exclusion re-applies on
 	// every serve branch). Change-guarded inside; best-effort.
 	persistModelSnapshot(storageJSON, a.Variant, out)
-	return out
+	return applyModelOrder(out)
 }
 
 // handleUsageTrae is the UsagePlugin entry point (v0.12.64): the host calls
@@ -818,7 +778,7 @@ func handleParseAuth(request []byte) ([]byte, error) {
 	// are base64-encoded strings; encoding/json never equates StorageJSON
 	// with storage_json). The previous reader never matched on the real
 	// host, so auth.parse always failed and CPA claimed trae files via its
-	// generic metadata fallback (generic labels, no pool registration).
+	// generic metadata fallback (generic labels).
 	var req struct {
 		StorageJSON json.RawMessage `json:"storage_json"`
 		FileName    string          `json:"FileName"`
@@ -864,11 +824,7 @@ func handleParseAuth(request []byte) ([]byte, error) {
 	if err != nil {
 		return errorEnvelope("parse_error", err.Error()), nil
 	}
-	// Register the account in the pool (cn/solo only; intl accounts are
-	// handled by the intl handler set and skipped here).
-	if a.Variant != "intl" && accountPool != nil {
-		accountPool.Add(a)
-	}
+
 	return okEnvelope(pluginapi.AuthParseResponse{
 		Handled: true,
 		Auth: pluginapi.AuthData{
@@ -977,22 +933,9 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 		HideSaasLogin: oauthHideSaasLoginFor(lv),
 	})
 
-	// Supersede any previous pending login (single pending-login slot per
-	// flow map — mirrors cockpit-tools' single PENDING_OAUTH_STATE slot):
-	// close the old callback listener so retries never accumulate listeners
-	// for the 15-minute login TTL. A superseded tab's poll hits the tested
-	// "unknown state — please restart login" path.
-	loginStates.Range(func(key, value any) bool {
-		if prev, ok := value.(*loginCtx); ok {
-			closeListener(prev.listener)
-		}
-		loginStates.Delete(key)
-		return true
-	})
-
 	// Step 6: Persist login state (state = login_trace_id).
 	state := loginTraceID
-	loginStates.Store(state, &loginCtx{
+	lc := &loginCtx{
 		variant:       lv,
 		listener:      ln,
 		authDir:       host.AuthDir,
@@ -1008,7 +951,7 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 		// 交换点复用并随凭证落盘。
 		devicePublicKey:  ident.DevicePublicKey,
 		devicePrivateKey: ident.DevicePrivateKey,
-	})
+	}
 
 	// Step 7: accept loop only for the local-listener flow; resource
 	// flows are completed by the CPA resource route / .oauth file.
@@ -1017,29 +960,18 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 	// credentials; restorePendingLoginState re-materializes it after a
 	// process bounce. Dot-prefixed so the credential claim logic in
 	// adopt.go never mistakes it for a credential.
-	persistPendingLogin(pendingLoginRecord{
-		Flow:          "cn",
-		State:         state,
-		Variant:       lv,
-		LoginHost:     loginHost,
-		CbURL:         cbURL,
-		CodeVerifier:  codeVerifier,
-		CodeChallenge: codeChallenge,
-		DeviceID:      deviceID,
-		MachineID:     machineID,
-		// v0.12.76: 稳定设备身份的密钥对随 pending 记录落盘，进程重启
-		// 后的 self-complete 仍复用同一对（不再现铸）。
-		DevicePublicKey:  ident.DevicePublicKey,
-		DevicePrivateKey: ident.DevicePrivateKey,
-		AuthDir:          host.AuthDir,
-		CreatedAt:        time.Now().Unix(),
-		ExpiresAt:        time.Now().Add(loginTTL).Unix(),
-	})
+	lc.loginHost = loginHost
+	lc.Owner = host.Owner
+	lc.CreatedAt = time.Now().Unix()
+	if err := registerLoginCN(lc); err != nil {
+		closeListener(ln)
+		return nil, err
+	}
 
 	if ln != nil {
 		go acceptCallback(state)
 	}
-	log.Printf("trae start-login (%s): callback=%s — if the browser cannot reach it (Docker without the port published / remote host), paste the full address-bar URL into the paste box on <panel>/v0/resource/plugins/trae/panel, or POST it as {\"url\":...} to <panel>%s (state=%s)", lv, cbURL, resourceSubmitPath, state)
+	log.Printf("trae start-login (%s): callback=%s — if the browser cannot reach it (Docker without the port published / remote host), paste the full address-bar URL into the paste box on <panel>/v0/resource/plugins/trae/panel, or POST it as {\"url\":...} to <panel>%s", lv, cbURL, resourceSubmitPath)
 
 	return okEnvelope(pluginapi.AuthLoginStartResponse{
 		Provider:  providerName,
@@ -1047,7 +979,7 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 		State:     state,
 		ExpiresAt: time.Now().Add(loginTTL).UTC(),
 		Metadata: map[string]any{
-			"logo":                   pluginLogoURL,
+			"stage": "pending", "persistent": host.AuthDir != "", "retryable": true, "logo": pluginLogoURL,
 			"callback_url":           cbURL,
 			"login_trace_id":         loginTraceID,
 			"fallback_callback_path": resourceCallbackPath,
@@ -1066,6 +998,7 @@ func startLoginWithVariant(request []byte, lv string) ([]byte, error) {
 
 // loginCtx holds the local callback listener for one in-flight OAuth flow.
 type loginCtx struct {
+	loginProgress
 	listener netListener
 	variant  string
 	state    string
@@ -1122,22 +1055,17 @@ func acceptCallback(state string) {
 		return
 	}
 	lc := v.(*loginCtx)
-	lc.done = make(chan struct{})
-	defer close(lc.done)
 
 	ln := lc.listener
 	_ = ln.(*netTCPListener).SetDeadline(time.Now().Add(loginTTL))
 	for {
-		if time.Now().After(lc.expires) {
+		if lc.CreatedAt != 0 && time.Now().After(time.Unix(lc.CreatedAt, 0).Add(loginTTL)) {
 			closeListener(lc.listener)
 			return
 		}
 		conn, err := ln.Accept()
 		if err != nil {
-			// Deadline exceeded or listener closed — janitor cleans the state.
-			if lc.err == nil {
-				lc.err = fmt.Errorf("callback accept: %w", err)
-			}
+
 			closeListener(lc.listener)
 			return
 		}
@@ -1188,97 +1116,22 @@ func handleCallbackConn(conn netConn, lc *loginCtx) bool {
 	}
 	vals, _ := url.ParseQuery(rest[q+1:])
 
-	// Error path.
-	for _, k := range []string{"error", "error_code", "err", "errorCode"} {
-		if ev := vals.Get(k); ev != "" {
-			lc.err = fmt.Errorf("oauth callback error: %s=%s", k, ev)
-			writeCallbackHTML(conn, "Login failed", lc.err.Error())
-			return true
-		}
-	}
-	if ir := vals.Get("isRedirect"); ir == "false" {
-		lc.err = fmt.Errorf("oauth callback: isRedirect=false")
-		writeCallbackHTML(conn, "Login failed", "isRedirect=false")
-		return true
-	}
-
-	// loginHost (used for ExchangeToken; falls back to oauthDefaultHost).
-	for _, k := range []string{"loginHost", "login_host", "LoginHost", "host", "consoleHost"} {
-		if v := vals.Get(k); v != "" {
-			lc.loginHost = v
-			break
-		}
-	}
-
-	// userTag (v0.12.24): mirrors cockpit-tools TraeCallbackPayload.user_tag.
-	// Kept for parity with the intl flow; CN accounts exchange against the
-	// fixed api.trae.cn origin regardless of the tag.
-	for _, k := range []string{"userTag", "user_tag", "UserTag"} {
-		if v := vals.Get(k); v != "" {
-			lc.userTag = v
-			break
-		}
-	}
-
-	// userInfo echo (v0.12.77 parity with the resource-callback route,
-	// which has carried this since v0.12.25): the account's real
-	// UID/ScreenName. Besides the file-identity fallback, this is the
-	// trigger for the per-account DERIVED device identity — the local
-	// listener path used to miss it entirely, so listener logins never
-	// switched onto the account's own device.
-	if id := parseCallbackIdentity(vals); id.UID != "" {
-		lc.cbUID = id.UID
-		if id.Nickname != "" {
-			lc.cbNickname = id.Nickname
-		}
-		applyDerivedIdentityCN(lc, id.UID)
-	}
-
-	// Refresh token (use directly — skip ExchangeToken auth-code path).
-	for _, k := range []string{"refreshToken", "refresh_token", "RefreshToken", "refresh-token"} {
-		if v := vals.Get(k); v != "" {
-			lc.refreshToken = v
-			break
-		}
-	}
-
-	// Auth code (multiple names; first non-empty wins).
-	for _, k := range []string{"authCode", "auth_code", "AuthCode", "authorization_code", "code"} {
-		if v := vals.Get(k); v != "" {
-			lc.authCode = v
-			break
-		}
-	}
-
-	// authCodeInfo — extract auth code from JSON payload.
-	if lc.authCode == "" {
-		for _, k := range []string{"authCodeInfo", "auth_code_info", "AuthCodeInfo"} {
-			if v := vals.Get(k); v != "" {
-				if ac := extractAuthCodeFromAuthCodeInfo(v); ac != "" {
-					lc.authCode = ac
-					break
-				}
-			}
-		}
-	}
-
-	// Final sanity check + browser response.
-	switch {
-	case lc.err != nil:
-		writeCallbackHTML(conn, "Login failed", lc.err.Error())
-		return true
-	case lc.refreshToken != "" || lc.authCode != "":
-		writeCallbackHTML(conn, "Login successful", "You can close this window now.")
-		return true
-	default:
+	msg, accepted := acceptLoginCallbackCN(lc, vals)
+	if !accepted {
 		writeCallbackStatus(conn, "404 Not Found")
 		return false
 	}
+	if msg != "" {
+		writeCallbackHTML(conn, "Login failed", msg)
+	} else {
+		writeCallbackHTML(conn, "Login successful", "Callback received; credentials are being prepared.")
+	}
+	return true
 }
 
 // writeCallbackHTML responds to the browser with a simple HTML page.
 func writeCallbackHTML(w io.Writer, title, msg string) {
-	body := fmt.Sprintf("<html><body><h2>%s</h2><p>%s</p></body></html>", title, msg)
+	body := fmt.Sprintf("<html><body><h2>%s</h2><p>%s</p></body></html>", htmlEscape(title), htmlEscape(msg))
 	fmt.Fprintf(w, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
 		len(body), body)
 }
@@ -1306,275 +1159,7 @@ func writeCallbackStatus(w io.Writer, status string) {
 //  7. Call GetUserInfo for UID/nickname/enterpriseID.
 //  8. Build storage JSON and return AuthLoginStatusSuccess.
 func handlePollLogin(request []byte) ([]byte, error) {
-	captureAuthDir(request) // v0.12.17: keep the restore-path AuthDir warm
-	var req pluginapi.AuthLoginPollRequest
-	if err := json.Unmarshal(request, &req); err != nil {
-		return nil, err
-	}
-	state := strings.TrimSpace(req.State)
-	if state == "" {
-		return nil, fmt.Errorf("poll: empty state")
-	}
-	v, ok := loginStates.Load(state)
-	if !ok {
-		// v0.12.17: process bounced since start-login — re-materialize
-		// the disk-persisted pending login so the paste still completes.
-		if s := restorePendingLoginState(state); s != "" {
-			v, ok = loginStates.Load(s)
-		}
-	}
-	if !ok {
-		return nil, fmt.Errorf("poll: unknown state — please restart login")
-	}
-	lc := v.(*loginCtx)
-	if time.Now().After(lc.expires) {
-		recordLoginOutcome(state, false, "login expired (15 min timeout)")
-		clearPendingLogin(lc.authDir)
-		loginStates.Delete(state)
-		closeListener(lc.listener)
-		return nil, fmt.Errorf("poll: login expired (15 min timeout) — please re-initiate")
-	}
-
-	// Wait briefly for the callback to complete (non-blocking).
-	select {
-	case <-lc.done:
-		// Callback received.
-	default:
-		if lc.listener == nil {
-			// Resource-callback flow: the browser redirect completed the
-			// flow on the CPA resource route; if the host intercepted the
-			// redirect at its own oauth-callback endpoint instead, pick
-			// the code up from the .oauth callback file it wrote.
-			if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
-				if cbErr != "" {
-					lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
-				} else if code != "" {
-					lc.authCode = code
-				}
-				completeLogin(lc)
-			}
-		}
-		select {
-		case <-lc.done:
-			// Completed via the fallback above.
-		default:
-			return okEnvelope(pluginapi.AuthLoginPollResponse{
-				Status:  pluginapi.AuthLoginStatusPending,
-				Message: "waiting for browser login",
-			})
-		}
-	}
-
-	// fail is a helper that cleans up the login state and returns an error envelope.
-	fail := func(msg string) ([]byte, error) {
-		recordLoginOutcome(state, false, msg)
-		clearPendingLogin(lc.authDir)
-		loginStates.Delete(state)
-		closeListener(lc.listener)
-		raw, _ := okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusError,
-			Message: msg,
-		})
-		return raw, nil
-	}
-
-	if lc.err != nil {
-		return fail(lc.err.Error())
-	}
-
-	var (
-		accessToken  string
-		refreshToken string
-		expiresAt    int64
-		// v0.12.24: device key pair generated for the auth-code exchange;
-		// persisted into the credential for the upstream device binding.
-		lcDevicePublicKey  string
-		lcDevicePrivateKey string
-		// v0.12.44: raw ExchangeToken response — persisted as auth.exchangeResponse
-		// (credential parity with cockpit-tools trae_auth_raw.exchangeResponse:
-		// region echoes, server-bound device, refresh-token expiry all live here).
-		exchangeRaw []byte
-	)
-
-	switch {
-	case lc.refreshToken != "":
-		// Refresh-token path: use the callback's refresh token to obtain an
-		// access token via the refresh ExchangeToken flow (refreshLocked).
-		// Equivalent to "直接用 + skip auth-code ExchangeToken".
-		a := &auth.Auth{
-			RefreshToken: lc.refreshToken,
-			APIHost:      oauthDefaultHost,
-			Domain:       "trae.cn",
-			MachineID:    lc.machineID,
-			DeviceID:     lc.deviceID,
-			// v0.12.77: carry the login's device key pair (per-account
-			// derived when the callback echoed the uid) so the bound
-			// renewal signs as that device instead of falling to the
-			// legacy unbound path.
-			DevicePublicKey:  lc.devicePublicKey,
-			DevicePrivateKey: lc.devicePrivateKey,
-			// v0.12.60: refreshLocked 以谱系选 OAuth ClientID
-			// （solo → en1oxy7wnw8j9n）。裸 Auth 缺 variant 时一律解析成
-			// cn client，SOLO 登录当场就换发出跨类 token——ug/pay 族
-			// 401 code=1001（积分查询/签到全挂，聊天却正常）。
-			Variant: lc.variant,
-		}
-		if err := upstreamClient.RefreshToken(a); err != nil {
-			// Fallback: treat the callback's refreshToken as access token directly.
-			log.Printf("ExchangeToken(refresh) failed: %v — using refreshToken as accessToken", err)
-			accessToken = lc.refreshToken
-			refreshToken = lc.refreshToken
-		} else {
-			accessToken = a.AccessToken
-			refreshToken = a.RefreshToken
-			expiresAt = a.ExpiresAt
-		}
-
-	case lc.authCode != "":
-		// Auth-code path: call ExchangeToken with AuthCode body.
-		// v0.12.24: the candidates now lead with the CN account-API
-		// origins (api.trae.cn → api.trae.com.cn — cockpit-tools
-		// candidate_account_api_origins), with the loginHost derivation
-		// (www.trae.cn HTML host etc.) demoted to a last-resort
-		// fallback. DeviceInfo mirrors build_official_device_info and
-		// now carries a fresh per-login EC P-256 DevicePublicKey (an
-		// empty value surfaces as HTTP 401 / business code 20405 — the
-		// official client uploads a bound public key on first exchange).
-		// v0.12.76: the pair now comes from the stable login identity
-		// (carried from start-login / restored from the pending record)
-		// instead of a fresh mint per exchange.
-		loginHost := lc.loginHost
-		pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, lc.variant)
-		if keyErr != nil {
-			return fail(fmt.Sprintf("device key pair: %v", keyErr))
-		}
-		di := buildOfficialDeviceInfo(
-			lc.deviceID, lc.machineID, oauthPlatformCodeFor(lc.variant), oauthDeviceName,
-			oauthDeviceBrand, upstream.IdeVersion, oauthDeviceType, oauthOSVersion, pubKeyPEM,
-		)
-		tokenBody := map[string]any{
-			"ClientID":     upstream.ClientIDFor(lc.variant),
-			"AuthCode":     lc.authCode,
-			"CodeVerifier": lc.codeVerifier,
-			"DeviceInfo":   di,
-			"IDEVersion":   upstream.IdeVersion,
-		}
-		bodyBytes, _ := json.Marshal(tokenBody)
-		tokenRaw, exErr := exchangeTokenCandidates(
-			authCodeExchangeURLsCN(loginHost), bodyBytes)
-		if exErr != nil {
-			return fail(exErr.Error())
-		}
-		lcDevicePrivateKey = privKeyPEM
-		lcDevicePublicKey = pubKeyPEM
-		exchangeRaw = tokenRaw
-		// Parse token response (multiple field names supported per cockpit-tools).
-		accessToken, refreshToken, expiresAt = parseExchangeTokenResponse(tokenRaw)
-		if accessToken == "" && refreshToken == "" {
-			return fail(fmt.Sprintf("ExchangeToken: no token in response (body=%s)",
-				truncate(string(tokenRaw), 200)))
-		}
-		if accessToken == "" {
-			// Some responses only return a refresh token; use it as access token too.
-			accessToken = refreshToken
-		}
-
-	default:
-		return fail("login completed but no authCode/refreshToken received — please retry")
-	}
-
-	// Build partial Auth and call GetUserInfo for UID.
-	a := &auth.Auth{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresAt:    expiresAt,
-		APIHost:      oauthDefaultHost,
-		Domain:       "trae.cn",
-		MachineID:    lc.machineID,
-		DeviceID:     lc.deviceID,
-	}
-	// v0.12.5: stamp the login's variant (cn/solo). Without this the saved
-	// auth file carried variant:"" and a solo login was re-claimed as cn
-	// (wrong ClientID / endpoints / models on every later dispatch).
-	a.Variant = lc.variant
-	// v0.12.44: GetUserInfoFull keeps the raw profile response (cockpit-tools
-	// trae_profile_raw parity: avatar/region/tenant/mobile live in Result).
-	uid, nickname, entID, userInfoRaw, err := upstreamClient.GetUserInfoFull(a)
-	if err != nil {
-		log.Printf("GetUserInfo failed: %v — proceeding with callback/unknown identity", err)
-	}
-	// v0.12.25: identity chain — GetUserInfo → callback userInfo echo →
-	// stable per-variant unknown name. The old behavior proceeded "with
-	// empty UID" and saved the nameless trae-.json; the self-complete
-	// path meanwhile minted a per-login trae-<uuid>.json — together the
-	// reported duplicate-account bug.
-	a.UID = resolveLoginUID(uid, lc.cbUID, lc.variant)
-	a.Nickname = resolveLoginNickname(nickname, lc.cbNickname)
-	a.EnterpriseID = entID
-
-	// Persist the auth file (nested form: {type, provider, auth:{...}, account:{...}}).
-	// CRITICAL: include type+provider so CPA can route this auth to the correct plugin.
-	// v0.12.44: auth/account carry the cockpit-tools-parity extras (platformId,
-	// authClientId, exchangeResponse, profileRaw, region echoes, bound device,
-	// refresh expiry) via credentialParityFields — see credentialParityFields.
-	authFields := map[string]any{
-		"accessToken":      a.AccessToken,
-		"refreshToken":     a.RefreshToken,
-		"expiresAt":        a.ExpiresAt,
-		"domain":           a.Domain,
-		"apiHost":          a.APIHost,
-		"machineId":        a.MachineID,
-		"deviceId":         a.DeviceID,
-		"variant":          a.Variant,
-		"devicePublicKey":  lcDevicePublicKey,
-		"devicePrivateKey": lcDevicePrivateKey,
-	}
-	accountFields := map[string]any{
-		"uid":          a.UID,
-		"enterpriseId": a.EnterpriseID,
-		"nickname":     a.Nickname,
-	}
-	authExtras, accountExtras := credentialParityFields(lc.variant, lc.loginHost, exchangeRaw, userInfoRaw)
-	for k, v := range authExtras {
-		authFields[k] = v
-	}
-	for k, v := range accountExtras {
-		accountFields[k] = v
-	}
-	storageJSON, _ := json.MarshalIndent(map[string]any{
-		"type":     providerName,
-		"provider": providerName,
-		"auth":     authFields,
-		"account":  accountFields,
-		"disabled": false,
-	}, "", "  ")
-
-	// Register in pool.
-	accountPool.Add(a)
-
-	// Cleanup login state (+ v0.12.17: outcome cache & pending-file clear).
-	recordLoginOutcome(state, true, "")
-	clearPendingLogin(lc.authDir)
-	loginStates.Delete(state)
-	closeListener(lc.listener)
-
-	return okEnvelope(pluginapi.AuthLoginPollResponse{
-		Status:  pluginapi.AuthLoginStatusSuccess,
-		Message: fmt.Sprintf("login complete (uid=%s)", a.UID),
-		Auth: pluginapi.AuthData{
-			// v0.12.8: ID must equal the saved file name so the login upsert
-			// and the watcher claim of the new file share one record.
-			// v0.12.27: per-variant namespace (solo → trae-solo-cn-<uid>.json)
-			// so a cn+solo dual login of one Trae account stops overwriting
-			// itself ("solo became init").
-			Provider:    providerName,
-			ID:          credentialFileName(a.Variant, a.UID),
-			FileName:    credentialFileName(a.Variant, a.UID),
-			Label:       nonEmpty(a.Nickname, variantLabel(a.Variant)+" "+a.UID),
-			StorageJSON: storageJSON,
-			Metadata:    map[string]any{"type": providerName, "uid": a.UID, "nickname": a.Nickname, "note": authNote(a.Variant)},
-		},
-	})
+	return pollLoginCN(request)
 }
 
 // -----------------------------------------------------------------------------
@@ -1969,37 +1554,7 @@ func stringOr(v any) string {
 	return ""
 }
 
-func handleRefreshAuth(request []byte) ([]byte, error) {
-	captureAuthDir(request) // v0.12.17: restore-path AuthDir warm
-
-	var req pluginapi.AuthRefreshRequest
-	if err := json.Unmarshal(request, &req); err != nil {
-		return nil, err
-	}
-	a, err := parseStoredAuth(req.StorageJSON)
-	if err != nil {
-		return nil, fmt.Errorf("refresh: parse auth: %w", err)
-	}
-	if err := upstreamClient.RefreshToken(a); err != nil {
-		return nil, fmt.Errorf("refresh: ExchangeToken: %w", err)
-	}
-	// v0.12.44: merge into the existing credential (preserves the device key
-	// pair and the parity extras) instead of rebuilding from the normalized
-	// in-memory struct, which silently stripped every custom field.
-	storageJSON := mergeAuthStorage(req.StorageJSON, a)
-	return okEnvelope(pluginapi.AuthRefreshResponse{
-		Auth: pluginapi.AuthData{
-			// v0.12.8: empty ID — the host keeps the existing record's ID.
-			Provider:    providerName,
-			ID:          "",
-			FileName:    credentialFileName(a.Variant, a.UID),
-			Label:       nonEmpty(a.Nickname, variantLabel(a.Variant)+" "+a.UID),
-			StorageJSON: storageJSON,
-			Metadata:    map[string]any{"type": providerName, "uid": a.UID, "note": authNote(a.Variant)},
-		},
-		NextRefreshAfter: time.Now().Add(12 * time.Hour).UTC(),
-	})
-}
+func handleRefreshAuth(request []byte) ([]byte, error) { return refreshAuthRequest(request) }
 
 // -----------------------------------------------------------------------------
 // Executor: execute + execute_stream
@@ -2014,25 +1569,14 @@ func handleExecExecute(request []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("execute: parse auth: %w", err)
 	}
-	// Refresh token if needed (within 24h of expiry).
-	refreshed, err := upstreamClient.RefreshTokenIfNeeded(a, defaultRefreshSkew)
+	a, err = refreshExecutorAuth(req, a)
 	if err != nil {
 		return nil, fmt.Errorf("execute: refresh: %w", err)
 	}
-	if refreshed {
-		// Persist the new token back to host auth store so it survives CPA restart.
-		persistRefreshedAuth(req, a)
+	if quotaGuard(executorObservationIndex(req), req.Model) {
+		return nil, upstreamStatusError(http.StatusPaymentRequired, fmt.Errorf("upstream quota rejection remains active for this account/model; release or retry after observation TTL"))
 	}
 
-	// v0.12.67: 配额冻结闸门。池里处于 1005/4008/巡检归零冻结的凭证先做
-	// 一次轻量积分探测（ent-usage，不打聊天上游）：余量已恢复 → 解冻放行
-	// （CPA 面板「重置配额」或 0 点补额由此端到端生效）；仍为 0 → 直接 402，
-	// 省掉一次注定失败的聊天调用。探测失败/未知 → 放行（真耗尽时 chat 402
-	// 会再次冻结：自我修正，不会假恢复）。
-	if quotaGate(accountPool, a) == gateRefuse {
-		return nil, upstreamStatusError(http.StatusPaymentRequired, fmt.Errorf(
-			"该账号处于配额耗尽冻结（至次日本地 0 点），已在调用上游前拦截；积分恢复后点面板「解除冷却」或用 CPA「重置配额」立即恢复 // quota-exhaustion freeze active (until local midnight); release via the panel button or CPA reset-quota"))
-	}
 	// Call ChatStream (always stream upstream; aggregate for non-stream).
 	// issue #13 诊断：入口指纹行（TRAE_DEBUG_PAYLOAD=1 时输出），与 ChatStream
 	// 的 prepared 行对齐后可实测非流式/流式两条链的出站请求是否一致。
@@ -2046,7 +1590,7 @@ func handleExecExecute(request []byte) ([]byte, error) {
 	if rc == nil {
 		// Non-2xx: classify and cool the account.
 		kind := upstream.Classify(status, string(body))
-		applyCooldown(a.UID, kind)
+		observeChatFailure(executorObservationIndex(req), req.Model, kind)
 		// 0.12.52: account-level statuses ride the error envelope so the
 		// host cooldown layer also stops re-picking a drained credential.
 		return nil, upstreamStatusError(status, chatHTTPErrorFor(status, kind, string(body)))
@@ -2056,7 +1600,7 @@ func handleExecExecute(request []byte) ([]byte, error) {
 	completion, err := upstream.Aggregate(rc)
 	if err != nil {
 		if se, ok := err.(*upstream.SOLOStreamError); ok {
-			applyCooldown(a.UID, se.Kind())
+			observeChatFailure(executorObservationIndex(req), req.Model, se.Kind())
 			// v0.12.83: 这里原来只把错误 `aggregate: %w` 一层包装就返回，状态被
 			// 洗成"无状态"，宿主看不见账号配额已经耗尽，会继续选这个号。
 			return nil, upstreamStatusError(soloFaultStatus(se),
@@ -2064,7 +1608,6 @@ func handleExecExecute(request []byte) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("aggregate: %w", err)
 	}
-	accountPool.NoteSuccess(a.UID)
 	out, _ := json.Marshal(completion)
 	return okEnvelope(pluginapi.ExecutorResponse{Payload: out})
 }
@@ -2229,23 +1772,14 @@ func handleExecStream(request []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stream: parse auth: %w", err)
 	}
-	refreshed, err := upstreamClient.RefreshTokenIfNeeded(a, defaultRefreshSkew)
+	a, err = refreshExecutorAuth(req.ExecutorRequest, a)
 	if err != nil {
 		return nil, fmt.Errorf("stream: refresh: %w", err)
 	}
-	if refreshed {
-		persistRefreshedAuth(req.ExecutorRequest, a)
+	if quotaGuard(executorObservationIndex(req.ExecutorRequest), req.Model) {
+		return nil, upstreamStatusError(http.StatusPaymentRequired, fmt.Errorf("upstream quota rejection remains active for this account/model; release or retry after observation TTL"))
 	}
 
-	// v0.12.67: 配额冻结闸门。池里处于 1005/4008/巡检归零冻结的凭证先做
-	// 一次轻量积分探测（ent-usage，不打聊天上游）：余量已恢复 → 解冻放行
-	// （CPA 面板「重置配额」或 0 点补额由此端到端生效）；仍为 0 → 直接 402，
-	// 省掉一次注定失败的聊天调用。探测失败/未知 → 放行（真耗尽时 chat 402
-	// 会再次冻结：自我修正，不会假恢复）。
-	if quotaGate(accountPool, a) == gateRefuse {
-		return nil, upstreamStatusError(http.StatusPaymentRequired, fmt.Errorf(
-			"该账号处于配额耗尽冻结（至次日本地 0 点），已在调用上游前拦截；积分恢复后点面板「解除冷却」或用 CPA「重置配额」立即恢复 // quota-exhaustion freeze active (until local midnight); release via the panel button or CPA reset-quota"))
-	}
 	// issue #13 诊断：同 handleExecExecute，两入口指纹行使两条执行链可对比。
 	upstream.LogChatHead("stream", req.Model, req.Payload)
 	// issue #18: 同 handleExecExecute——req.Model 优先，body 名字仅作回退。
@@ -2255,7 +1789,7 @@ func handleExecStream(request []byte) ([]byte, error) {
 	}
 	if rc == nil {
 		kind := upstream.Classify(status, string(body))
-		applyCooldown(a.UID, kind)
+		observeChatFailure(executorObservationIndex(req.ExecutorRequest), req.Model, kind)
 		// 0.12.52: account-level statuses ride the error envelope so the
 		// host cooldown layer also stops re-picking a drained credential.
 		return nil, upstreamStatusError(status, chatHTTPErrorFor(status, kind, string(body)))
@@ -2284,7 +1818,7 @@ func handleExecStream(request []byte) ([]byte, error) {
 		log.Printf("chat_stream uid=%s variant=%s model=%s: upstream SSE error code=%d msg=%s",
 			a.UID, a.Variant, model, se.Code, se.Msg)
 		faults.record(se)
-		applyCooldown(a.UID, se.Kind())
+		observeChatFailure(executorObservationIndex(req.ExecutorRequest), req.Model, se.Kind())
 	}
 
 	// Async path (c-shared plugins always get a stream_id): return
@@ -2317,11 +1851,6 @@ func handleExecStream(request []byte) ([]byte, error) {
 					return
 				}
 			}
-			// 只有真的答过话才算一次成功：此前流内错误之后仍然 NoteSuccess，
-			// 会把 errCount 清零，让耗尽的账号一直留在池子里。
-			if !faults.any() {
-				accountPool.NoteSuccess(a.UID)
-			}
 			streamClose(req.StreamID)
 		}()
 		return okEnvelope(streamResponse{
@@ -2343,9 +1872,6 @@ func handleExecStream(request []byte) ([]byte, error) {
 	for chunk := range ch {
 		chunks = append(chunks, pluginapi.ExecutorStreamChunk{Payload: chunk})
 	}
-	if !faults.any() {
-		accountPool.NoteSuccess(a.UID)
-	}
 	return okEnvelope(streamResponse{
 		Headers: http.Header{"Content-Type": []string{"text/event-stream"}},
 		Chunks:  chunks,
@@ -2355,54 +1881,6 @@ func handleExecStream(request []byte) ([]byte, error) {
 // -----------------------------------------------------------------------------
 // Quota freeze gate (v0.12.67)
 // -----------------------------------------------------------------------------
-
-// gateDecision is the outcome of the quota-freeze gate for one execute call.
-type gateDecision int
-
-const (
-	gateProceed gateDecision = iota // serve normally (not frozen / thawed / inconclusive)
-	gateRefuse                      // frozen and the probe confirms the credits are still empty
-)
-
-// quotaGate decides whether a pool-frozen credential may serve this request.
-// The probe is the real ent-usage call; quotaGateProbe is the testable core.
-func quotaGate(p *pool.Pool, a *auth.Auth) gateDecision {
-	return quotaGateProbe(p, a, upstreamClient.UserEntUsage)
-}
-
-// quotaGateProbe implements the gate: a frozen credential gets ONE lightweight
-// ent-usage probe (never a chat call). remain>0 → thaw and proceed; known-zero
-// → refuse; unknown remain or probe error → fail-open (the chat attempt itself
-// re-cools on 402/4008, so fail-open never sticks).
-func quotaGateProbe(p *pool.Pool, a *auth.Auth, probe func(*auth.Auth) (*upstream.EntUsageResult, error)) gateDecision {
-	if p == nil || a == nil {
-		return gateProceed
-	}
-	frozen, _, reason := p.QuotaFreeze(a.UID)
-	if !frozen {
-		return gateProceed
-	}
-	usage, err := probe(a)
-	if err == nil {
-		// 池里只有 CN/SOLO 账号（intl 凭证不进池，见 handleParseAuth 注释）。
-		remain, known := upstream.PackListRemain(usage.UserEntitlementPackList, true)
-		if known && remain > 0 {
-			// 上游已补额/用户已充值：解冻并放行 —— CPA 面板「重置配额」
-			// 与次日 0 点窗口的自动恢复都由此闭环。
-			p.ReenableIfCredits(a.UID, remain)
-			log.Printf("quota gate uid=%s: probe remain=%d — thawed (%s)", a.UID, remain, reason)
-			return gateProceed
-		}
-		if known && remain <= 0 {
-			log.Printf("quota gate uid=%s: probe remain=0 — refusing before chat (%s)", a.UID, reason)
-			return gateRefuse
-		}
-		// remain 未知（Free 等无 pack 账号）→ 不猜测，放行。
-	} else {
-		log.Printf("quota gate uid=%s: probe unavailable (%v) — proceeding", a.UID, err)
-	}
-	return gateProceed
-}
 
 // -----------------------------------------------------------------------------
 // Cooldown / lifecycle
@@ -2466,42 +1944,6 @@ func soloStreamEventMsg(code int64, msg string) string {
 	return base
 }
 
-func applyCooldown(uid string, kind upstream.ErrKind) {
-	applyCooldownOn(accountPool, uid, kind)
-}
-
-// applyCooldownOn is the testable core of applyCooldown (pool injectable).
-func applyCooldownOn(p *pool.Pool, uid string, kind upstream.ErrKind) {
-	switch kind {
-	case upstream.ErrPlanLimit:
-		// v0.12.66: 1005/4008 配额耗尽冷却对齐用户的积分窗口——
-		// 到次日本地 0 点（原固定 12h 会把 0 点已刷新的账号多冻一截）。
-		// 0 点上游若仍未补充额度，下一次 402/4008 会再次冷却：策略
-		// 自我修正，不会假恢复。
-		d := pool.UntilNextMidnight()
-		p.Cooldown(uid, pool.CoolPlan, d, fmt.Sprintf(
-			pool.ReasonQuotaChat+" — resumes at local midnight (%s)",
-			time.Now().Add(d).Format("2006-01-02 15:04")))
-	case upstream.ErrSoftRate:
-		p.Cooldown(uid, pool.CoolSoft, 60*time.Second, "soft rate limit (429)")
-	case upstream.ErrSessionDead:
-		p.Disable(uid, "session dead (401)")
-	case upstream.ErrNotFound:
-		p.Cooldown(uid, pool.CoolSoft, 60*time.Second, "not found (404)")
-	case upstream.ErrServer, upstream.ErrClient:
-		p.NoteError(uid, 3, 10*time.Minute)
-	// v0.12.50: 输入过大是请求级问题——同一请求在任何账号上都会被拒，
-	// 记错误只会把健康账号冷却（NoteError 累计 3 次 → 10 分钟）。
-	case upstream.ErrInputTooLarge:
-		// 请求级失败，不惩罚账号
-	// v0.12.79 (issue #9): 4001 模型/通道不匹配同样是请求级失败——换任何
-	// 账号结果相同；反复选到死模型不得把健康账号累计冷却（对齐
-	// trae2api-more/TraeWorkAssistant：模型类 4001 不冷却、不计 failed）。
-	case upstream.ErrModelUnavailable:
-		// 请求级失败，不惩罚账号
-	}
-}
-
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
@@ -2548,11 +1990,8 @@ func (e *statusError) Error() string   { return e.err.Error() }
 func (e *statusError) StatusCode() int { return e.status }
 func (e *statusError) Unwrap() error   { return e.err }
 
-// upstreamStatusError wraps a chat failure for the host cooldown layer.
-// trae policy: only 401/402/429 pass. 404 stays status-less — the host maps
-// 404 to 12h while the plugin pool intends CoolSoft 60s; plan-limit bodies
-// and input-too-large are already handled plugin-side (ErrPlanLimit 12h /
-// ErrInputTooLarge no-op) and must not be double-cooled by host policy.
+// upstreamStatusError preserves upstream account-level statuses for the host.
+// Missing paths/models remain request-level; this helper never selects another account.
 func upstreamStatusError(status int, err error) error {
 	if status == http.StatusUnauthorized ||
 		status == http.StatusPaymentRequired ||

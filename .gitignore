@@ -52,3 +52,10 @@ plugins/trae/tools/
 plugins/mimo/mimo
 plugins/mimo/mimo.so
 plugins/mimo/mimo.h
+
+# Independent Trae release artifacts
+dist/
+*.zip
+plugins/trae/*.h
+
+__pycache__/

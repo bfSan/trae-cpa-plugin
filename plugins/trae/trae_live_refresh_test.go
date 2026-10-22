@@ -27,8 +27,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 func liveTraeAuth(t *testing.T) *auth.Auth {

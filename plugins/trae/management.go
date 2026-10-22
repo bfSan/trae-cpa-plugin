@@ -1,7 +1,7 @@
 // management.go implements the Trae SOLO CN management API and web panel:
 // the account dashboard (uid, nickname, credits, plan, check-in status),
 // manual check-in (single or all accounts), credit query, token refresh,
-// and the account-pool status (cooling / disabled state).
+// and account observations and host-owned disabled state.
 //
 // Routes are exposed under two prefixes:
 //   - /v0/management/plugins/trae-solo-cn/*  — JSON endpoints (CPA-management-
@@ -20,7 +20,6 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -28,9 +27,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/pool"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -88,12 +86,17 @@ func managementRegistration() managementRegistrationResponse {
 	base := "/plugins/" + providerName
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
+			{Method: http.MethodPost, Path: base + "/login/start", Description: "Start a protected CN/SOLO/Intl login task."},
+			{Method: http.MethodPost, Path: base + "/login/poll", Description: "Resume a login task and safely save its result."},
+			{Method: http.MethodGet, Path: base + "/login/status", Description: "Read a login task status without exposing credentials."},
+			{Method: http.MethodPost, Path: base + "/accounts/action", Description: "Rename or explicitly enable/disable one account."},
+			{Method: http.MethodPost, Path: base + "/accounts/refresh", Description: "Refresh and persist one existing account."},
 			{Method: http.MethodGet, Path: base + "/accounts", Description: "List Trae SOLO CN accounts with credits, plan, and check-in status."},
 			{Method: http.MethodPost, Path: base + "/checkin", Description: "Manually check in one account (auth_index) or all accounts."},
 			{Method: http.MethodGet, Path: base + "/credits", Description: "Get real-time credits for one (auth_index query) or all accounts."},
 			{Method: http.MethodPost, Path: base + "/refresh", Description: "Force refresh access tokens for all accounts and return the refreshed dashboard (accounts)."},
-			{Method: http.MethodGet, Path: base + "/status", Description: "Account-pool state: cooling / disabled reasons per account."},
-			{Method: http.MethodPost, Path: base + "/release", Description: "Manually release a quota-exhaustion freeze (1005/4008 / scan-zero) for one account (uid, or auth_index fallback). Pair with CPA reset-quota for the host-side 30-min model cooldown."},
+			{Method: http.MethodGet, Path: base + "/status", Description: "Account facts: scoped quota observations and host disabled state."},
+			{Method: http.MethodPost, Path: base + "/release", Description: "Release cached upstream quota observations for one auth_index; does not enable disabled accounts."},
 			{Method: http.MethodPost, Path: base + "/import", Description: "Import Trae credential JSON (nested or flat) into host auth store."},
 			{Method: http.MethodGet, Path: base + "/intl/accounts", Description: "Trae Intl: list accounts with uid, nickname, and token expiry."},
 			{Method: http.MethodGet, Path: base + "/intl/status", Description: "Trae Intl: plugin status."},
@@ -150,6 +153,23 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 	base := loadedManagementBasePath() + "/plugins/" + providerName
 	switch {
+	case req.Method == http.MethodPost && path == base+"/login/start":
+		return okEnvelope(handleOAuthManagementStart(req))
+	case req.Method == http.MethodPost && path == base+"/login/poll":
+		return okEnvelope(handleOAuthManagementPoll(req))
+	case req.Method == http.MethodGet && path == base+"/login/status":
+		return okEnvelope(handleOAuthManagementStatus(req))
+	case req.Method == http.MethodPost && path == base+"/accounts/action":
+		status, payload := handleAccountActionQuery(req)
+		return okEnvelope(mgmtJSONResponse(status, payload))
+	case req.Method == http.MethodPost && path == base+"/accounts/refresh":
+		var body struct {
+			AuthIndex string `json:"auth_index"`
+		}
+		if json.Unmarshal(req.Body, &body) != nil || strings.TrimSpace(body.AuthIndex) == "" {
+			return okEnvelope(mgmtJSONResponse(http.StatusBadRequest, map[string]any{"error": "auth_index is required"}))
+		}
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, refreshAccount(strings.TrimSpace(body.AuthIndex), true)))
 	case req.Method == http.MethodGet && path == base+"/accounts":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildDashboard()))
 	case req.Method == http.MethodPost && path == base+"/checkin":
@@ -159,7 +179,7 @@ func handleManagement(raw []byte) ([]byte, error) {
 	case req.Method == http.MethodPost && path == base+"/refresh":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleRefresh()))
 	case req.Method == http.MethodGet && path == base+"/status":
-		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildPoolStatus()))
+		return okEnvelope(mgmtJSONResponse(http.StatusOK, buildMaintenanceStatus()))
 	case req.Method == http.MethodPost && path == base+"/release":
 		return okEnvelope(mgmtJSONResponse(http.StatusOK, handleCooldownRelease(req)))
 	case req.Method == http.MethodPost && path == base+"/import":
@@ -212,7 +232,7 @@ func servePanel(sub string) []byte {
 
 // traeAccount is one row of the dashboard. It is built from the host auth
 // store (host.auth.list) so it reflects the CPA UI's on-disk truth — the
-// accountPool may lag behind by one config-reload cycle.
+// Physical snapshots prevent stale registrations from reviving deleted files.
 type traeAccount struct {
 	AuthIndex string       `json:"auth_index"`
 	AuthID    string       `json:"auth_id,omitempty"`
@@ -238,13 +258,8 @@ type traeAccount struct {
 }
 
 type traeCredits struct {
-	// TotalRemain is the SUBSCRIPTION pack quota. nil = never fetched — NOT
-	// the same as 0 (a checkin-only free account has a 0 pack but a non-zero
-	// wallet). v0.12.25: the check-in WALLET lives in checkin.credits
-	// (traeCheckin).
-	// v0.12.28: TotalRemain 改为上游用量模型值（fast 可用次数 / basic 剩余），
-	// 且 RemainKnown=false 时为 nil —— 未知剩余不再渲染成 0（对齐 cockpit-tools
-	// "无可靠剩余时不猜测"：Free 显示 "免费剩余：--"）。
+	// TotalRemain is measured subscription quota. nil means unknown, not zero.
+	// Check-in credits are the daily reward amount, never a wallet balance.
 	TotalRemain *int64 `json:"total_remain"`
 	Plan        string `json:"plan"`
 	FetchedAt   string `json:"fetched_at,omitempty"`
@@ -262,7 +277,7 @@ type traeCredits struct {
 	PlanType       string `json:"plan_type,omitempty"`        // user_pay_identity_str
 
 	// v0.12.34: 官方 cashier 同口径积分池（模型调用真正扣减的钱；
-	// 签到钱包在 checkin.credits，两笔分开的钱不再混显）。
+	// 签到奖励数额仅用于签到展示，不能当作余额）。
 	CreditsPoolRemain    *int64 `json:"credits_pool_remain,omitempty"`
 	CreditsPoolKnown     bool   `json:"credits_pool_known,omitempty"`
 	CreditsPoolUnlimited bool   `json:"credits_pool_unlimited,omitempty"`
@@ -276,20 +291,8 @@ type traeCheckin struct {
 
 // buildDashboard aggregates every Trae SOLO CN credential from the host auth
 // store, plus a snapshot of credits / checkin status from the account cache
-// (or live upstream if the cache is stale).
+// (read-only; live probes are explicit management operations).
 func buildDashboard() map[string]any {
-	// v0.12.27: migrate shared-namespace solo credentials FIRST (rename +
-	// re-register) so the inventory below and the heal scan both see the
-	// final names. Idempotent; a no-op once every solo file is namespaced.
-	if n := migrateSoloFileNames(); n > 0 {
-		log.Printf("trae dashboard: migrated %d solo credential(s) into the solo namespace", n)
-	}
-	// v0.12.26: heal next — if the host's manager dropped any on-disk
-	// credential (torn-read reconciliation, see heal.go), re-register it so
-	// the panel reflects the REAL credential inventory, not the manager's.
-	if n := healAuthRegistration(providerName+"-", hostAuthList); n > 0 {
-		log.Printf("trae dashboard: healed %d credential(s) missing from host manager", n)
-	}
 	files, err := hostAuthList()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
@@ -304,16 +307,18 @@ func buildDashboard() map[string]any {
 			Status:    f.Status,
 			Disabled:  f.Disabled,
 		}
-		sa, err := hostAuthGet(f.AuthIndex)
+		snapshot, err := freshAuthSnapshot(f.AuthIndex)
 		if err != nil {
 			acct.Error = "load auth: " + err.Error()
 			out = append(out, acct)
 			continue
 		}
+		sa := snapshot.Stored
+		acct.Disabled = snapshot.File.Disabled
 		acct.UID = sa.Account.UID
 		acct.Nickname = sa.Account.Nickname
 		acct.Variant = sa.Variant
-		acct.DeviceIDSet = strings.TrimSpace(sa.Auth.DeviceID) != ""
+		acct.DeviceIDSet = strings.TrimSpace(snapshot.Auth.DeviceID) != ""
 		// v0.12.44: 凭证自证谱系 + 缓存的 CheckLogin 绑定快照。
 		acct.Platform = upstream.PlatformIDFor(sa.Variant)
 		if v, ok := accountCache.Load(f.AuthIndex); ok {
@@ -334,7 +339,7 @@ func buildDashboard() map[string]any {
 			if e, ok2 := v.(*accountCacheEntry); ok2 && (e.credits >= 0 || e.usageFilled) {
 				acct.Credits = creditsFromCache(e)
 			}
-			if e, ok2 := v.(*accountCacheEntry); ok2 && e.checkin != nil {
+			if e, ok2 := v.(*accountCacheEntry); ok2 && e.checkin != nil && e.checkinObserved.In(checkinDayLocation).Format("2006-01-02") == time.Now().In(checkinDayLocation).Format("2006-01-02") {
 				acct.Checkin = &traeCheckin{
 					CheckedIn: e.checkin.CheckedIn,
 					Credits:   e.checkin.Credits,
@@ -351,61 +356,8 @@ func buildDashboard() map[string]any {
 	}
 }
 
-// buildPoolStatus surfaces the accountPool's cooling / disabled state — useful
-// for debugging why traffic is being routed away from an account.
-func buildPoolStatus() map[string]any {
-	if accountPool == nil {
-		return map[string]any{"provider": providerName, "accounts": []any{}}
-	}
-	statuses := accountPool.List()
-	return map[string]any{
-		"provider":    providerName,
-		"accounts":    statuses,
-		"server_time": time.Now().Format("2006-01-02 15:04:05"),
-	}
-}
-
-// handleCooldownRelease clears a quota-exhaustion freeze on demand — the
-// panel's 「解除冷却」 button (v0.12.67). Body: {"uid":"..."} preferred, or
-// {"auth_index":"..."} resolved via hostAuthGet. Disabled accounts are
-// reported untouched (their session is dead; only a re-login fixes them).
-// The host-side 30-min model cooldown is cleared by the PANEL calling the
-// CPA-native POST /v0/management/reset-quota with the same management key —
-// plugin RPC has no host method for it, so the two-line handshake lives in
-// panel.js releaseCooldown().
 func handleCooldownRelease(req pluginapi.ManagementRequest) map[string]any {
-	var body struct {
-		UID       string `json:"uid"`
-		AuthIndex string `json:"auth_index"`
-	}
-	if len(req.Body) > 0 {
-		_ = json.Unmarshal(req.Body, &body)
-	}
-	uid := strings.TrimSpace(body.UID)
-	if uid == "" {
-		if idx := strings.TrimSpace(body.AuthIndex); idx != "" {
-			sa, err := hostAuthGet(idx)
-			if err != nil {
-				return map[string]any{"error": "resolve auth_index: " + err.Error()}
-			}
-			uid = sa.Account.UID
-		}
-	}
-	if uid == "" {
-		return map[string]any{"error": "uid or auth_index required"}
-	}
-	if accountPool == nil {
-		return map[string]any{"error": "pool unavailable"}
-	}
-	st, ok := accountPool.Release(uid)
-	if !ok {
-		return map[string]any{"error": "uid not in pool: " + uid, "released": false}
-	}
-	return map[string]any{
-		"released": true,
-		"uid":      uid,
-		"status":   st,
-	}
+	return releaseAccountObservation(req)
 }
 
 // -----------------------------------------------------------------------------
@@ -603,222 +555,45 @@ func creditsFromCache(e *accountCacheEntry) *traeCredits {
 // (empty until handleCreditsQuery fills it).
 func (e *accountCacheEntry) usagePlan() string { return e.plan }
 
-// notifyCheckinRateLimited 把手动签到路径遇到的 9074（官方瞬时限流）交给
-// 调度器进入当日退避重试；非 9074 错误（token 失效等）不重试。
-func notifyCheckinRateLimited(err error) {
-	var ue *upstream.Error
-	if !errors.As(err, &ue) || !upstream.IsRateLimit9074(ue.BizCode) {
-		return
-	}
-	if sched != nil {
-		sched.NotifyCheckinRateLimited()
-	}
-}
-
-// handleManualCheckin triggers checkin for one (auth_index) or all accounts.
-// Body: {"auth_index":"<idx>","uid":"<uid>"} — empty / omitted triggers all.
-// v0.12.28: uid 兼底匹配。凭证文件被 migrate/heal/adopt 改名或宿主管理器
-// 重建后 auth_index 会变化，面板仍持旧 index 点击签到会匹配 0 个文件；
-// 此时改按 uid 匹配（uid 稳定），并把实际使用的 auth_index 回传给面板。
+// Manual, automatic and retry paths all enter checkinAccount's account lock.
 func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {
 		AuthIndex string `json:"auth_index"`
 		UID       string `json:"uid"`
 	}
 	if len(req.Body) > 0 {
-		_ = json.Unmarshal(req.Body, &body)
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return map[string]any{"error": "invalid JSON"}
+		}
 	}
-	results := []map[string]any{}
-
-	files, err := hostAuthList()
+	files, err := maintenanceAuthList()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
-	// v0.12.28: auth_index 失效检测。面板传了 index 却匹配不到任何文件
-	// （凭证被 migrate/heal/adopt 改名或宿主重建过），改按 uid 匹配；
-	// 两者都匹配不到时返回明确的 stale_index 错误而不是空 results
-	// （空 results 曾被面板渲染成"签到完成"假成功）。
-	targets := make([]pluginapi.HostAuthFileEntry, 0, len(files))
-	indexMatched := false
+	indices := []string{}
 	for _, f := range files {
-		if body.AuthIndex != "" && f.AuthIndex == body.AuthIndex {
-			indexMatched = true
+		if body.AuthIndex != "" {
+			if f.AuthIndex == body.AuthIndex {
+				indices = append(indices, f.AuthIndex)
+			}
+			continue
 		}
-	}
-	fallbackByUID := !indexMatched && body.AuthIndex != "" && body.UID != ""
-	for _, f := range files {
-		if body.AuthIndex == "" {
-			// all accounts
-		} else if indexMatched {
-			if f.AuthIndex != body.AuthIndex {
+		if body.UID != "" {
+			s, err := freshAuthSnapshot(f.AuthIndex)
+			if err != nil || s.Auth.UID != body.UID {
 				continue
 			}
-		} else if fallbackByUID {
-			// stale auth_index → uid 兜底
-		} else {
-			continue
 		}
-		targets = append(targets, f)
+		indices = append(indices, f.AuthIndex)
 	}
-	if body.AuthIndex != "" && len(targets) == 0 {
-		return map[string]any{
-			"provider":    providerName,
-			"results":     results,
-			"error":       "stale_index: auth_index 不存在（凭证可能已被重命名/重注册），请刷新列表后重试",
-			"stale_index": true,
-		}
+	if body.AuthIndex != "" && len(indices) == 0 {
+		return map[string]any{"error": "stale_index: refresh account inventory", "stale_index": true, "results": []any{}}
 	}
-	for _, f := range targets {
-		entry := map[string]any{"auth_index": f.AuthIndex, "uid": "", "nickname": ""}
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			entry["error"] = "load auth: " + err.Error()
-			results = append(results, entry)
-			continue
-		}
-		if fallbackByUID && strings.TrimSpace(sa.Account.UID) != strings.TrimSpace(body.UID) {
-			continue // uid 兜底时只处理同 uid 账号
-		}
-		entry["uid"] = sa.Account.UID
-		entry["nickname"] = sa.Account.Nickname
-		a := hostAuthAsUpstream(sa)
-		// v0.12.32: 官方客户端 claim 要求 x-device-id 携带真实绑定的数字 did
-		// （BlueChonk 逆向报告 FINDINGS §四/§五；did 缺失/未绑定时服务端
-		// 可能 code=0 但静默不入账）。导入的账号文件可能缺 deviceId ——
-		// 透出诊断，别让"签到成功但不到账"隐形。
-		entry["device_id_set"] = strings.TrimSpace(a.DeviceID) != ""
-		if strings.TrimSpace(a.DeviceID) == "" {
-			// v0.12.43: 从"告警后硬签"改为硬性拦截 —— 官方 claim 要求
-			// x-device-id（FINDINGS §四/§五：缺失时服务端可能 code=0 但
-			// 静默不入账），硬签只会产生"成功但不到账"的假结果。给出
-			// 可行动的修复路径；账号仍在面板展示，重新登录即可补齐。
-			entry["error"] = "缺少 deviceId：官方 claim 要求 x-device-id（真实绑定 did），凭证缺设备身份，硬签可能成功但不入账 —— 请用插件 OAuth 重新登录该账号补齐后再签"
-			results = append(results, entry)
-			continue
-		}
-		// v0.12.38: 签到前保鲜。宿主对 trae 无主动刷新调度（无 RefreshLead/
-		// refresh_interval 元数据，CLIProxyAPI auto_refresh_loop 只调度内置
-		// provider），面板签到读的是 hostAuthGet 快照；若执行器侧已轮换而
-		// 快照滞后，签到会撞过期 token。过期即刷新，并写回宿主——refreshToken
-		// 轮换后不落盘，下次宿主侧刷新用旧 token 必失败（会话死）。
-		if a.RefreshTokenValue() != "" {
-			refreshed, rerr := upstreamClient.RefreshTokenIfNeeded(a, 0)
-			if rerr != nil {
-				log.Printf("checkin %s: pre-flight refresh failed: %v", sa.Account.UID, rerr)
-				entry["refresh_error"] = rerr.Error()
-			} else if refreshed {
-				name := f.Name
-				if strings.TrimSpace(name) == "" {
-					name = credentialFileName(a.Variant, a.UID)
-				}
-				if serr := hostAuthSave(name, storageJSONForAuth(a)); serr != nil {
-					log.Printf("checkin %s: CRITICAL token refreshed but persist failed: %v — host copy may hold a stale refreshToken", sa.Account.UID, serr)
-					entry["persist_error"] = serr.Error()
-				} else {
-					entry["refreshed"] = true
-				}
-			}
-		}
-		entry["expires_at"] = a.ExpiresAt
-		// v0.12.65: 本轮 attempt 生成全新签到设备号，贯穿 status→claim→回查
-		// （随机 16 位数字串实测可领，登录 hex32 必败 9074——见 upstream.NewCheckinDeviceID）。
-		did := upstream.NewCheckinDeviceID()
-		status, err := upstreamClient.CheckinStatus(a, did)
-		if err != nil {
-			entry["error"] = "checkin_status: " + err.Error()
-			notifyCheckinRateLimited(err)
-			results = append(results, entry)
-			continue
-		}
-		// v0.12.40: credits 语义修正（反编译官方 TraeWork CN 2.3.81345 定案）——
-		// status.credits 是"每日签到奖励数额"（官方卡片 "Daily check-in:
-		// {credits} credits"），非钱包余额；签到后不增长，旧"签到后-签到前"
-		// 差值算法作废。入账证据优先取 claim 响应携带的数额，缺省回退
-		// 签到前奖励配置（基础 credits + 加码 extra_credits）。
-		beforeCredits := status.Credits
-		awarded := int64(-1)
-		claimAccepted := false // v0.12.61: claim 返回 code:0（含幂等回声）→ 上游接受了本次领取
-		if !status.CheckedIn && !status.DidCheckedIn && status.Enable {
-			claim, err := upstreamClient.CheckinClaim(a, did)
-			if err != nil {
-				entry["error"] = "checkin_claim: " + err.Error()
-				// v0.12.33: 手动签到撞 9074 也纳入当日退避重试（与调度器同节奏）。
-				notifyCheckinRateLimited(err)
-				// v0.12.73: 9074 持续时轮换签到设备号并落盘（trae-checkin 模型）。
-				var ue9074 *upstream.Error
-				if errors.As(err, &ue9074) && upstream.IsRateLimit9074(ue9074.BizCode) && upstream.RotateCheckinDevice(a) {
-					if serr := hostAuthSave(credentialFileName(a.Variant, a.UID), storageJSONForAuth(a)); serr != nil {
-						entry["rotate_save_error"] = serr.Error()
-					}
-				}
-			} else {
-				claimAccepted = claim.Code == 0
-				entry["claim_code"] = claim.Code
-				entry["claim_message"] = claim.Message
-				// 入账证据：claim 响应携带的数额优先。
-				if claim.ClaimCredits != nil {
-					entry["claim_credits"] = *claim.ClaimCredits
-					awarded = *claim.ClaimCredits
-				} else {
-					awarded = beforeCredits + status.ExtraCredits
-				}
-				// 领取成功后重查状态（对齐官方 workbench claim 后 refresh）。
-				if after, stErr := upstreamClient.CheckinStatus(a, did); stErr == nil {
-					status = after
-					// v0.12.65: code:0 存在幂等假成功（当日已签账号任何 device_id 都回 code:0），
-					// checked_in 未翻转 -> 标记未确认，面板如实展示，不伪装成功。
-					if !after.CheckedIn && !after.DidCheckedIn {
-						entry["claim_unconfirmed"] = true
-					}
-				}
-			}
-		}
-		entry["already_checked_in"] = status.CheckedIn || status.DidCheckedIn
-		entry["credits"] = status.Credits
-		if status.ExtraCredits > 0 {
-			entry["extra_credits"] = status.ExtraCredits
-		}
-		if awarded >= 0 {
-			entry["awarded"] = awarded
-		}
-		// Refresh cached checkin / credits.
-		// v0.12.40 语义：e.credits = SUBSCRIPTION pack quota（订阅包余额）；
-		// e.checkin.Credits = 签到奖励数额（非钱包、非可花余额）。此前
-		// "签到 150 积分一刷新就归零"即误把奖励当余额存进 e.credits 所致。
-		// v0.12.61: 缓存重建抽成 checkinCacheEntry —— claim 被上游接受
-		// （code:0，含文档化的幂等回声）时作废旧的资金快照，见函数注释。
-		var prev *accountCacheEntry
-		if v, ok := accountCache.Load(f.AuthIndex); ok {
-			if e, ok2 := v.(*accountCacheEntry); ok2 {
-				prev = e
-			}
-		}
-		newEntry := checkinCacheEntry(prev, claimAccepted, status)
-		accountCache.Store(f.AuthIndex, newEntry)
-		// Re-enable account in pool if checkin restored credits.
-		// v0.12.28: pool score prefers the usage-model remain when known
-		// (fast/basic). v0.12.40: credits 是奖励配置而非可花余额，不再叠加进
-		// 评分（旧 pack+wallet 叠加源于同一误读）。
-		if accountPool != nil {
-			score := int64(0)
-			if prev != nil && prev.usageFilled && newEntry.usage.RemainKnown && newEntry.usage.Remain > 0 {
-				r := newEntry.usage.Remain
-				if r < 0 { // unlimited fast requests
-					r = 1 << 30
-				}
-				score = r
-			} else if prev != nil && prev.credits > 0 {
-				score = prev.credits
-			}
-			accountPool.ReenableIfCredits(sa.Account.UID, score)
-		}
-		results = append(results, entry)
+	results := []map[string]any{}
+	for _, index := range indices {
+		results = append(results, checkinAccount(index))
 	}
-	return map[string]any{
-		"provider":    providerName,
-		"results":     results,
-		"server_time": time.Now().Format("2006-01-02 15:04:05"),
-	}
+	return map[string]any{"provider": providerName, "results": results, "server_time": time.Now().Format(time.RFC3339)}
 }
 
 // checkinCacheEntry rebuilds the accountCache entry after a manual checkin.
@@ -834,23 +609,18 @@ func handleManualCheckin(req pluginapi.ManagementRequest) map[string]any {
 // The checkin card itself (award amount / checked_in flag) always refreshes
 // from the fresh status.
 func checkinCacheEntry(prev *accountCacheEntry, claimAccepted bool, status *upstream.CheckinStatusResult) *accountCacheEntry {
-	e := &accountCacheEntry{
-		credits: -1, // -1 = unknown → dashboard omits the credits row
-		checkin: &checkinStatus{
-			CheckedIn: status.CheckedIn || status.DidCheckedIn,
-			Credits:   status.Credits,
-			Enable:    status.Enable,
-		},
-		fetched: time.Now(),
+	e := &accountCacheEntry{credits: -1}
+	if prev != nil {
+		*e = *prev
 	}
-	if !claimAccepted && prev != nil {
-		e.credits = prev.credits
-		e.usageFilled = prev.usageFilled
-		if prev.usageFilled {
-			e.usage = prev.usage
-			e.plan = prev.plan
-		}
+	e.checkin = &checkinStatus{CheckedIn: status.CheckedIn || status.DidCheckedIn, Credits: status.Credits, Enable: status.Enable}
+	e.checkinObserved = time.Now()
+	if claimAccepted {
+		e.credits = -1
+		e.usageFilled = false
+		e.usageObserved = e.checkinObserved
 	}
+
 	return e
 }
 
@@ -923,13 +693,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 		if authIndex != "" && f.AuthIndex != authIndex {
 			continue
 		}
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			results = append(results, map[string]any{"auth_index": f.AuthIndex, "uid": "", "nickname": "", "error": "load auth: " + err.Error()})
-			continue
-		}
-		a := hostAuthAsUpstream(sa)
-		results = append(results, refreshAccountCredits(f, sa, a))
+		results = append(results, refreshAccount(f.AuthIndex, false))
 	}
 	return map[string]any{
 		"provider":    providerName,
@@ -940,7 +704,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 
 // refreshAccountCredits performs the live per-account credits query
 // (ent_usage + credits pool + pay_status + CheckLogin + checkin status),
-// stores the snapshot into accountCache / accountPool and returns the
+// stores independent factual cache fields and returns the
 // result entry for the caller's results array.
 //
 // v0.12.70: extracted from handleCreditsQuery so handleRefresh can run the
@@ -951,7 +715,7 @@ func handleCreditsQuery(req pluginapi.ManagementRequest) map[string]any {
 // storedAuth/upstream auth; token-refresh failures are the caller's
 // decision to skip (same dead token would just fail upstream again).
 func refreshAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, a *auth.Auth) map[string]any {
-	entry := map[string]any{"auth_index": f.AuthIndex, "uid": sa.Account.UID, "nickname": sa.Account.Nickname}
+	entry := map[string]any{"auth_index": f.AuthIndex, "uid": sa.Account.UID, "nickname": sa.Account.Nickname, "_observed_at": time.Now()}
 	// v0.12.72 (issue #29 field report): intl accounts live on a DIFFERENT
 	// billing face (grow-normal.trae.ai + /trae/api/v1/pay/*). Driving them
 	// through the CN client surfaced "ent_usage: upstream session_dead (http
@@ -1014,14 +778,14 @@ func refreshAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, a *aut
 	// 仅作展示与"已签"判定，不再计入池子评分/可花余额。
 	wallet := int64(-1)
 	checkedIn, enable := false, false
-	if st, stErr := upstreamClient.CheckinStatus(a); stErr == nil {
+	if st, stErr := upstreamClient.CheckinStatus(a, upstream.CheckinDeviceFor(a)); stErr == nil {
 		wallet = st.Credits
 		checkedIn, enable = st.CheckedIn || st.DidCheckedIn, st.Enable
 	} else {
 		entry["checkin_status_error"] = stErr.Error()
 	}
-	// Shared tail: entry projection + cache/pool snapshot (pool-eligible).
-	return finalizeAccountCredits(f, sa, entry, sum, plan, bind, wallet, checkedIn, enable, true)
+	// Shared tail: independent field snapshots; no routing or account scoring.
+	return finalizeAccountCredits(f, sa, entry, sum, plan, bind, wallet, checkedIn, enable)
 }
 
 // annotateStaleToken flags a credits-query failure whose real root cause is
@@ -1075,16 +839,16 @@ func summarizeEntUsage(usage *upstream.EntUsageResult, isCN bool) (upstream.Usag
 }
 
 // finalizeAccountCredits projects the usage summary onto the management entry
-// and stores the accountCache (+ optionally accountPool) snapshot. Shared by
+// and merges the independent accountCache fields. Shared by
 // the CN/SOLO and Intl data paths (v0.12.72 extraction — behavior-preserving
 // for CN/SOLO).
-func finalizeAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry map[string]any, sum upstream.UsageSummary, plan string, bind *bindStatus, wallet int64, checkedIn, enable, poolEligible bool) map[string]any {
+func finalizeAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry map[string]any, sum upstream.UsageSummary, plan string, bind *bindStatus, wallet int64, checkedIn, enable bool) map[string]any {
 	entry["usage_model"] = sum.UsageModel
 	entry["remain_known"] = sum.RemainKnown
 	if sum.RemainKnown {
 		entry["total_remain"] = sum.Remain
 	} else {
-		entry["total_remain"] = 0 // 向后兼容；remain_known=false 时面板显示 "--"
+		entry["total_remain"] = nil // Unknown is not an observed zero.
 	}
 	entry["plan"] = plan
 	// v0.12.34: 积分池透出（面板"剩余积分"对齐官方口径）。
@@ -1118,54 +882,16 @@ func finalizeAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry
 		entry["checkin_credits"] = wallet
 		entry["checked_in"] = checkedIn
 	}
-	// Update cache + pool. e.credits stays pack-only (legacy field); the
-	// reward lives in e.checkin.Credits. v0.12.40: pool score = usage
-	// remain / credits pool only — the reward config is not spendable.
-	scoreRemain := int64(0)
-	if sum.RemainKnown {
-		scoreRemain = sum.Remain
-		if scoreRemain < 0 { // unlimited
-			scoreRemain = 1 << 30
-		}
+	observed, ok := entry["_observed_at"].(time.Time)
+	if !ok {
+		observed = time.Now()
 	}
-	if sum.CreditsPool.Known { // v0.12.34: 积分池参与池子评分
-		pr := sum.CreditsPool.Remain
-		if pr < 0 {
-			pr = 1 << 30
-		}
-		if pr > scoreRemain {
-			scoreRemain = pr
-		}
-	}
-	accountCache.Store(f.AuthIndex, &accountCacheEntry{
-		credits:     scoreRemain,
-		checkin:     &checkinStatus{CheckedIn: checkedIn, Credits: wallet, Enable: enable},
-		fetched:     time.Now(),
-		usage:       sum,
-		usageFilled: true,
-		plan:        plan,
-		bind:        bind,
-	})
-	// v0.12.64: fold the pool snapshot into the usage ledger so the
-	// credential-card usage note reports 标准额度 without upstream calls.
-	// trae exposes no reset-window bounds → the note shows the no-window
-	// fallback until one can be parsed.
+	delete(entry, "_observed_at")
+	updateUsageCache(f.AuthIndex, observed, sum, plan, bind, wallet, checkedIn, enable)
 	usageQuotaStampFromSummary(f.AuthIndex, sum)
-	// v0.12.72: pool mutations stay CN/SOLO-only (poolEligible) — the
-	// scheduler pool semantics are CN-tuned and intl chat routing does not
-	// flow through it.
-	if poolEligible && accountPool != nil {
-		// v0.12.40: 不再叠加奖励配置（wallet 变量名保留为历史语义，
-		// 现含义 = 签到奖励数额）。
-		accountPool.SetCredits(sa.Account.UID, scoreRemain)
-		// v0.12.66: 已知来源全为 0（至少一个已知）→ 主动冷却到
-		// 次日 0 点，不再等下一次调用撞 402/4008 才被动冷却。
-		if quotaExhaustedKnown(sum) {
-			accountPool.Cooldown(sa.Account.UID, pool.CoolPlan,
-				pool.UntilNextMidnight(),
-				"credits exhausted (0) — resumes at local midnight")
-		}
-	}
+	// A zero/positive balance is only an observation: neither disable accounts
+	// nor clear unrelated upstream quota/model/rate-limit failures.
+
 	return entry
 }
 
@@ -1173,7 +899,7 @@ func finalizeAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry
 // field report): ent_usage + pay_status on the intl pay face (intl_pay.go —
 // grow-normal.trae.ai + /trae/api/v1/pay/*). No check-in / CheckLogin: those
 // are CN-face endpoints and upstream 404s/401s them on intl. The cache
-// snapshot stays pool-neutral (poolEligible=false).
+// snapshot does not participate in routing.
 func refreshAccountCreditsIntl(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry map[string]any) map[string]any {
 	deviceID := sa.Auth.DeviceID
 	if deviceID == "" {
@@ -1204,7 +930,7 @@ func refreshAccountCreditsIntl(f pluginapi.HostAuthFileEntry, sa *storedAuth, en
 	}
 	entry["variant"] = "intl"
 	// No check-in on intl: wallet=-1 keeps checkin fields out of the entry.
-	return finalizeAccountCredits(f, sa, entry, sum, plan, &bindStatus{}, -1, false, false, false)
+	return finalizeAccountCredits(f, sa, entry, sum, plan, &bindStatus{}, -1, false, false)
 }
 func max64(a, b int64) int64 {
 	if a > b {
@@ -1217,62 +943,46 @@ func max64(a, b int64) int64 {
 // is within the refresh skew of expiry. Updates host-stored auth via host.auth.save
 // is the host's responsibility (we only mutate the in-memory Auth and trigger
 // upstream refresh); the next host.auth.refresh RPC will persist the new tokens.
+func refreshAccount(index string, refreshToken bool) map[string]any {
+	unlock := accountOperationLock(index)
+	defer unlock()
+	entry := map[string]any{"auth_index": index}
+	s, err := freshAuthSnapshot(index)
+	if err != nil {
+		entry["error"] = err.Error()
+		return entry
+	}
+	if s.File.Disabled {
+		entry["error"] = "account is manually disabled"
+		return entry
+	}
+	entry["uid"], entry["nickname"] = s.Auth.UID, s.Auth.Nickname
+	if refreshToken {
+		refreshed, err := refreshSnapshot(s, defaultRefreshSkew)
+		if err != nil {
+			entry["error"] = "refresh: " + err.Error()
+			return entry
+		}
+		entry["refreshed"] = refreshed
+	}
+	ce := refreshAccountCredits(s.File, s.Stored, s.Auth)
+	for k, v := range ce {
+		if k != "_observed_at" {
+			entry[k] = v
+		}
+	}
+	return entry
+}
 func handleRefresh() map[string]any {
-	files, err := hostAuthList()
+	files, err := maintenanceAuthList()
 	if err != nil {
 		return map[string]any{"error": err.Error()}
 	}
 	results := []map[string]any{}
 	for _, f := range files {
-		entry := map[string]any{"auth_index": f.AuthIndex, "uid": "", "nickname": ""}
-		sa, err := hostAuthGet(f.AuthIndex)
-		if err != nil {
-			entry["error"] = "load auth: " + err.Error()
-			results = append(results, entry)
-			continue
-		}
-		entry["uid"] = sa.Account.UID
-		entry["nickname"] = sa.Account.Nickname
-		a := hostAuthAsUpstream(sa)
-		refreshed, err := upstreamClient.RefreshTokenIfNeeded(a, defaultRefreshSkew)
-		if err != nil {
-			entry["error"] = "refresh: " + err.Error()
-			results = append(results, entry)
-			continue
-		}
-		entry["refreshed"] = refreshed
-		// v0.12.70: 顶部「刷新」此前只刷 token，返回的 dashboard 仍从
-		// accountCache 投影 —— toast 报「数据已刷新」而积分条纹丝不动
-		// （用户报告的刷新显示 bug）。token 刷新成功后走 /credits 同款实拉
-		// 链路（refreshAccountCredits），快照与结果一并保鲜；实拉失败不
-		// 掩盖 token 刷新结果，单独落 credits_error 诊断字段。
-		ce := refreshAccountCredits(f, sa, a)
-		for ck, cv := range ce {
-			switch ck {
-			case "auth_index", "uid", "nickname":
-				// entry 已带，保持不变
-			case "error":
-				entry["credits_error"] = cv
-			default:
-				entry[ck] = cv
-			}
-		}
-		results = append(results, entry)
+		results = append(results, refreshAccount(f.AuthIndex, true))
 	}
-	return map[string]any{
-		"provider": providerName,
-		"results":  results,
-		// v0.12.61: the panel's 刷新数据 renders d.accounts directly — its
-		// documented contract is the shared {accounts, provider,
-		// server_time} shape. This handler used to return only the raw
-		// refresh report, so a forced refresh rendered an EMPTY CN grid
-		// (intl accounts still loaded from their own endpoint) and the CN
-		// accounts "vanished" until the next full /accounts load. Attach
-		// the post-refresh dashboard snapshot; results stays for
-		// diagnostics.
-		"accounts":    buildDashboard()["accounts"],
-		"server_time": time.Now().Format("2006-01-02 15:04:05"),
-	}
+	return map[string]any{"provider": providerName, "results": results, "accounts": buildDashboard()["accounts"], "server_time": time.Now().Format(time.RFC3339)}
 }
 
 // hostAuthSave persists credential JSON via host.auth.save RPC.
@@ -1328,7 +1038,6 @@ func storageJSONForAuth(a *auth.Auth) []byte {
 			"enterpriseId": a.EnterpriseID,
 			"nickname":     a.Nickname,
 		},
-		"disabled": false,
 	}, "", "  ")
 	return storageJSON
 }
@@ -1348,7 +1057,7 @@ func mergeAuthStorage(existing []byte, a *auth.Auth) []byte {
 	}
 	authMap, ok := base["auth"].(map[string]any)
 	if !ok {
-		return storageJSONForAuth(a)
+		authMap = base
 	}
 	authMap["accessToken"] = a.AccessToken
 	authMap["refreshToken"] = a.RefreshToken
@@ -1387,25 +1096,6 @@ func mergeAuthStorage(existing []byte, a *auth.Auth) []byte {
 	return out
 }
 
-// persistRefreshedAuth writes updated token fields back to host auth store
-// after a successful RefreshTokenIfNeeded in the executor path.
-func persistRefreshedAuth(req pluginapi.ExecutorRequest, a *auth.Auth) {
-	// Derive file name from auth ID or StorageJSON.
-	fileName := req.AuthID
-	if fileName == "" {
-		// v0.12.27: per-variant fallback naming (solo → its own namespace).
-		fileName = credentialFileName(a.Variant, a.UID)
-	} else if !strings.HasSuffix(strings.ToLower(fileName), ".json") {
-		// v0.12.8: a uid-shaped AuthID would land as an extension-less
-		// file the watcher ignores, losing the refreshed token on restart.
-		fileName += ".json"
-	}
-	// v0.12.44: merge (preserve device keys + parity extras), don't rebuild.
-	if err := hostAuthSave(fileName, mergeAuthStorage(req.StorageJSON, a)); err != nil {
-		log.Printf("persist refreshed auth %s: %v", a.UID, err)
-	}
-}
-
 // handleImportAuth imports a Trae credential JSON (nested or flat) into the
 // host auth store. Body: {"json": <raw json>} or {"raw": "<json string>"}.
 // This lets users paste a token from another tool (e.g. traework2api login.sh)
@@ -1435,8 +1125,6 @@ func handleImportAuth(req pluginapi.ManagementRequest) map[string]any {
 	if err := hostAuthSave(fileName, storageJSON); err != nil {
 		return map[string]any{"success": false, "error": err.Error()}
 	}
-	// Register in pool.
-	accountPool.Add(a)
 	return map[string]any{
 		"success":  true,
 		"name":     fileName,

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 func TestEnsureHTTPSScheme(t *testing.T) {
@@ -75,7 +75,7 @@ func TestCandidateAPIOoriginsRewrite(t *testing.T) {
 
 // exchangeTokenCandidates must skip failing candidates (404 / HTML bodies)
 // and return the first URL that yields an access token.
-func TestExchangeTokenCandidatesFallback(t *testing.T) {
+func TestExchangeTokenCandidatesDoNotReplay(t *testing.T) {
 	notFound := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("404 page not found"))
@@ -97,15 +97,10 @@ func TestExchangeTokenCandidatesFallback(t *testing.T) {
 
 	urls := []string{notFound.URL + "/trae/api/v3/oauth/ExchangeToken", htmlHost.URL + "/trae/api/v3/oauth/ExchangeToken", good.URL + "/trae/api/v3/oauth/ExchangeToken"}
 	raw, err := exchangeTokenCandidates(urls, []byte(`{}`))
-	if err != nil {
-		t.Fatalf("exchangeTokenCandidates: %v", err)
+	if err == nil || raw != nil {
+		t.Fatal("one-time code must not be retried on another candidate")
 	}
-	if !strings.Contains(string(raw), "at-123") {
-		t.Fatalf("unexpected body: %s", raw)
-	}
-	if at := extractExchangeAccessToken(raw); at != "at-123" {
-		t.Fatalf("extractExchangeAccessToken=%q want at-123", at)
-	}
+
 }
 
 // All candidates failing (the reported upstream behavior) must aggregate the

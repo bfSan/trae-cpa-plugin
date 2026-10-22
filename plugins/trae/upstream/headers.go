@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 const clientUA = "Trae/" + IdeVersion

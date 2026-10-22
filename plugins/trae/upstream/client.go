@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/netroute"
 )
 
 // ErrKind 错误分类，pool 据此决定冷却时长（SPEC §4.3）。
@@ -70,9 +72,9 @@ type Error struct {
 
 func (e *Error) Error() string {
 	if e.BizCode != 0 {
-		return fmt.Sprintf("upstream biz_code=%d: %s", e.BizCode, e.Msg)
+		return fmt.Sprintf("upstream biz_code=%d: %s", e.BizCode, netroute.Redact(e.Msg))
 	}
-	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, e.Msg)
+	return fmt.Sprintf("upstream %s (http %d): %s", e.Kind, e.Status, netroute.Redact(e.Msg))
 }
 
 // bizError 构造业务码错误。v0.12.38 起优先透传上游响应的 message 原文——
@@ -206,15 +208,9 @@ type Client struct {
 
 // New 生产默认值。配置连接池减少 TLS 握手。
 func New() *Client {
-	tr := &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 120 * time.Second, // 首字节兜底（长推理预留），不限制整流时长
-	}
 	return &Client{
-		HTTP:       &http.Client{Timeout: 120 * time.Second, Transport: tr},
-		StreamHTTP: &http.Client{Transport: tr}, // 无总超时
+		HTTP:       netroute.NewClient(120*time.Second, false),
+		StreamHTTP: netroute.NewClient(0, true), // 无总超时
 		AgentHost:  AgentHost,
 		UgHost:     UgHost,
 		OAuthHost:  OAuthHost,
@@ -228,7 +224,7 @@ func (c *Client) oauthBase() string { return c.OAuthHost }
 
 // doJSON 发请求并解 JSON；HTTP 非 2xx 时返回带 body 片段的 *Error。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
-	resp, err := c.HTTP.Do(req)
+	resp, err := netroute.Do(c.HTTP, req)
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +286,10 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 	// 与 qilimixingkong/trae-checkin §2.8 交叉定案。绑定续期失败（含密钥缺失）
 	// 落回旧 /cloudide 路径，不比旧版更差。
 	if err := c.boundExchangeLocked(a); err != nil {
+		var ambiguous *ambiguousRefreshError
+		if errors.As(err, &ambiguous) {
+			return err
+		}
 		log.Printf("exchange refresh (bound) unavailable for uid=%s variant=%q: %v — legacy path", a.UID, a.Variant, err)
 	} else {
 		return nil
@@ -315,8 +315,12 @@ func (c *Client) refreshLocked(a *auth.Auth) error {
 		if lastErr == nil {
 			break
 		}
-		// 404/5xx/网络错误 → 换下一个源；业务错误（如 token 无效）也换源重试一次，
-		// 因为部分源只对特定账号域生效。
+		// Only explicit endpoint absence permits another origin. Do not replay
+		// a possibly consumed refresh token after transport/server failure.
+		var upstreamErr *Error
+		if !errors.As(lastErr, &upstreamErr) || (upstreamErr.Status != 404 && upstreamErr.Status != 405) {
+			break
+		}
 	}
 	if lastErr != nil {
 		// v0.12.75: 根因分类学注释——20101/10101/20403 映射为用户可执行的恢复
@@ -421,7 +425,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte, resolvedModel string) (rc
 	if c.StreamHTTP != nil {
 		hc = c.StreamHTTP
 	}
-	resp, err := hc.Do(req)
+	resp, err := netroute.Do(hc, req)
 	if err != nil {
 		log.Printf("chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err
@@ -828,7 +832,7 @@ func (c *Client) CheckinStatus(a *auth.Auth, deviceID ...string) (*CheckinStatus
 				resp.ReqSourceUsed = body
 				return &resp, nil
 			}
-			log.Printf("checkin status: %s scheme %s -> biz_code=%d msg=%q", ugBodyLabel(body), scheme, code, msg)
+			log.Printf("checkin status: %s scheme %s -> biz_code=%d msg=%q", ugBodyLabel(body), scheme, code, netroute.Redact(msg))
 			lastBiz = bizError(code, "获取签到状态失败", msg)
 			if code == 9074 {
 				break // 活动校验拒绝：换 req_source 再试（v0.12.41），同源换鉴权方案无意义
@@ -894,7 +898,7 @@ func (c *Client) CheckinClaim(a *auth.Auth, deviceID ...string) (*CheckinClaimRe
 				resp.ReqSourceUsed = body
 				return &resp, nil
 			}
-			log.Printf("checkin claim: %s scheme %s -> biz_code=%d msg=%q", ugBodyLabel(body), scheme, code, msg)
+			log.Printf("checkin claim: %s scheme %s -> biz_code=%d msg=%q", ugBodyLabel(body), scheme, code, netroute.Redact(msg))
 			lastBiz = bizError(code, "签到领取失败", msg)
 			if code == 9074 {
 				break // 活动校验拒绝：换 req_source 再试（v0.12.41），同源换鉴权方案无意义
@@ -1632,7 +1636,7 @@ func numericAnyToI64(v any) (int64, bool) {
 }
 
 func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
+	s = netroute.Redact(strings.TrimSpace(s))
 	if len(s) > n {
 		return s[:n]
 	}

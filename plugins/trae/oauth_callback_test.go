@@ -239,10 +239,10 @@ func TestHandleOAuthCallbackResourceErrors(t *testing.T) {
 	q.Set("state", state)
 	q.Set("error", "access_denied")
 	body = string(handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q}))
-	if !strings.Contains(body, "Login failed") || !strings.Contains(body, "access_denied") {
+	if !strings.Contains(body, "Login failed") || !strings.Contains(body, "callback rejected") {
 		t.Fatalf("error-param body = %s", body)
 	}
-	if lc.err == nil || !strings.Contains(lc.err.Error(), "access_denied") {
+	if lc.err == nil || !strings.Contains(lc.err.Error(), "callback rejected") {
 		t.Fatalf("lc.err = %v", lc.err)
 	}
 }

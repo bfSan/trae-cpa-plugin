@@ -52,7 +52,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 // deviceIdentityFilePattern is the per-variant identity file name; %s is the

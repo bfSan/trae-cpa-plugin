@@ -19,6 +19,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -27,6 +28,8 @@ import (
 	"strings"
 	"time"
 )
+
+var oauthHTTPDo = RoutedHTTPDo
 
 // Platform GetLoginGuidance endpoint lists — cockpit-tools
 // TRAE_CN_LOGIN_GUIDANCE_URLS / TRAE_LOGIN_GUIDANCE_URLS (trae_oauth.rs:36-44).
@@ -170,31 +173,34 @@ func requestLoginGuidance(cn bool, loginTraceID string) (loginHost string, lastE
 	// ERR_NETWORK ("网络错误") long before the request ever returned. Total
 	// failure degrades to the default login host, so a short timeout costs
 	// nothing but latency (v0.12.9).
-	client := &http.Client{Timeout: 5 * time.Second}
+	timeout := 5 * time.Second
 	for _, endpoint := range endpoints {
 		req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s => %v", endpoint, err))
+			errs = append(errs, "guidance request unavailable")
 			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", "Trae/"+oauthPluginVersion+" antigravity-cockpit-tools")
-		resp, err := client.Do(req)
+		ctx, cancel := context.WithTimeout(req.Context(), timeout)
+		resp, err := oauthHTTPDo(req.WithContext(ctx))
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s => %v", endpoint, err))
+			cancel()
+			errs = append(errs, "guidance transport unavailable")
 			continue
 		}
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
+		cancel()
 		if resp.StatusCode >= 400 {
-			errs = append(errs, fmt.Sprintf("%s => HTTP %d (body=%s)", endpoint, resp.StatusCode, truncate(string(raw), 120)))
+			errs = append(errs, fmt.Sprintf("guidance HTTP %d", resp.StatusCode))
 			continue
 		}
 		if host := extractLoginHost(raw); host != "" {
 			return host, nil
 		}
-		errs = append(errs, fmt.Sprintf("%s => response missing LoginHost (body=%s)", endpoint, truncate(string(raw), 120)))
+		errs = append(errs, "guidance response missing login host")
 	}
 	if cn {
 		// cockpit-tools: CN degrades to the default login host rather than
@@ -210,51 +216,39 @@ func requestLoginGuidance(cn bool, loginTraceID string) (loginHost string, lastE
 // ExchangeToken call and returns the first 2xx JSON body that carries an
 // access token (any of the field names cockpit-tools accepts). Every failure
 // is recorded so the caller can surface a meaningful error.
-func exchangeTokenCandidates(urls []string, body []byte) (raw []byte, err error) {
-	var errs []string
-	client := &http.Client{Timeout: 30 * time.Second}
-	for _, u := range urls {
-		req, rerr := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
-		if rerr != nil {
-			errs = append(errs, fmt.Sprintf("%s => %v", u, rerr))
-			continue
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("x-cloudide-token", "")
-		req.Header.Set("User-Agent", "Trae/"+oauthPluginVersion+" antigravity-cockpit-tools")
-		resp, rerr := client.Do(req)
-		if rerr != nil {
-			errs = append(errs, fmt.Sprintf("%s => %v", u, rerr))
-			continue
-		}
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		resp.Body.Close()
-		if resp.StatusCode >= 400 {
-			if code, msg := upstreamErrorCode(data); code != "" {
-				// v0.12.76: 业务性拒绝（带 Volcengine ResponseMetadata.Error.Code 的 4xx）是
-				// 账号/请求状态，与候选源无关 —— 立即短路，不再向其余源多烧失败请求
-				//（20401 Device limit reached 绝不该再走到 www.trae.cn 的 WAF；issue #38
-				// 服务端安全层教训，对齐 v0.12.74 刷新路径的单源决策）。网络错误/404/5xx/
-				// HTML 体保持原回退行为。
-				return nil, fmt.Errorf("ExchangeToken failed: %s => HTTP %d upstream code=%s (%s)%s",
-					u, resp.StatusCode, code, truncate(msg, 160), loginExchangeErrorHint(code))
-			}
-			// 404 page not found and friends: try the next candidate.
-			// v0.12.24: surface the Volcengine-style
-			// ResponseMetadata.Error code+message instead of a
-			// truncated JSON prefix that hides the actual cause.
-			errs = append(errs, fmt.Sprintf("%s => HTTP %d %s", u, resp.StatusCode, surfaceUpstreamError(data)))
-			continue
-		}
-		// www.* hosts return an HTML page with 200 — treat a JSON parse
-		// failure (or a body without an access token) as a failed candidate.
-		if at := extractExchangeAccessToken(data); at != "" {
-			return data, nil
-		}
-		errs = append(errs, fmt.Sprintf("%s => no access token (body=%s)", u, truncate(string(data), 120)))
+func exchangeTokenCandidates(urls []string, body []byte) ([]byte, error) {
+	// The code is one-time. A timeout/5xx/HTML response may have consumed it.
+	// Never retry against another origin; a new authorization is required.
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("ExchangeToken endpoint unavailable")
 	}
-	return nil, fmt.Errorf("ExchangeToken failed: %s", strings.Join(errs, " | "))
+	req, err := http.NewRequest(http.MethodPost, urls[0], bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("ExchangeToken request unavailable")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("x-cloudide-token", "")
+	req.Header.Set("User-Agent", "Trae/"+oauthPluginVersion)
+	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
+	defer cancel()
+	resp, err := oauthHTTPDo(req.WithContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("ExchangeToken transport outcome uncertain; start a new login")
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, oauthPendingMaxBytes+1))
+	if err != nil || len(data) > oauthPendingMaxBytes {
+		return nil, fmt.Errorf("ExchangeToken response unavailable")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		code, _ := upstreamErrorCode(data)
+		return nil, fmt.Errorf("ExchangeToken HTTP %d%s", resp.StatusCode, safeLoginCode(code)+loginExchangeErrorHint(code))
+	}
+	if extractExchangeAccessToken(data) == "" {
+		return nil, fmt.Errorf("ExchangeToken response missing access token")
+	}
+	return data, nil
 }
 
 // upstreamErrorCode 解析 Volcengine 风格 ResponseMetadata.Error {Code, Message}；
@@ -288,19 +282,13 @@ func loginExchangeErrorHint(code string) string {
 // upstream reason (v0.12.24, intl parity). Non-JSON bodies fall back to the
 // truncated raw text.
 func surfaceUpstreamError(data []byte) string {
-	var env struct {
-		ResponseMetadata struct {
-			Error struct {
-				Code    string `json:"Code"`
-				Message string `json:"Message"`
-			} `json:"Error"`
-		} `json:"ResponseMetadata"`
+	code, _ := upstreamErrorCode(data)
+	switch code {
+	case "20401", "20405", "1001":
+		return "upstream code=" + code
+	default:
+		return "upstream request rejected"
 	}
-	if err := json.Unmarshal(data, &env); err == nil && (env.ResponseMetadata.Error.Code != "" || env.ResponseMetadata.Error.Message != "") {
-		msg := strings.TrimSpace(env.ResponseMetadata.Error.Message)
-		return fmt.Sprintf("upstream code=%s (%s)", env.ResponseMetadata.Error.Code, truncate(msg, 160))
-	}
-	return "(body=" + truncate(string(data), 120) + ")"
 }
 
 // extractExchangeAccessToken mirrors cockpit-tools extract_exchange_access_token:
@@ -347,4 +335,13 @@ func authCodeExchangeURLsCN(loginHost string) []string {
 	}
 	urls = append(urls, buildAPIURLs(loginHost, "/trae/api/v3/oauth/ExchangeToken", true)...)
 	return dedupKeepOrder(urls)
+}
+
+func safeLoginCode(code string) string {
+	switch code {
+	case "20401", "20405", "10101", "1001":
+		return " upstream code=" + code
+	default:
+		return ""
+	}
 }

@@ -27,7 +27,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 func TestLiveCheckinClaim(t *testing.T) {

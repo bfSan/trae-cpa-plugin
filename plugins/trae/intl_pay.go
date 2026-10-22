@@ -31,7 +31,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/netroute"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 // intlPayBase is the field-verified intl billing face host. Var (not const)
@@ -44,15 +45,7 @@ const intlPayUserAgent = "Trae/3.5.66"
 
 // intlPayHTTP is the pooled client for the intl pay face (small, credits
 // queries are rare — panel refresh / scheduler cadence).
-var intlPayHTTP = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		MaxIdleConns:          20,
-		MaxIdleConnsPerHost:   8,
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-	},
-}
+var intlPayHTTP = netroute.NewClient(30*time.Second, false)
 
 // Endpoint paths on the intl pay face (v1 — NOT the CN v2 family).
 const (
@@ -126,7 +119,7 @@ func intlPayPost(path, accessToken, region, deviceID string) ([]byte, error) {
 	}
 	req.Header.Set("Authorization", "Cloud-IDE-JWT "+accessToken)
 
-	resp, err := intlPayHTTP.Do(req)
+	resp, err := netroute.Do(intlPayHTTP, req)
 	if err != nil {
 		return nil, err
 	}

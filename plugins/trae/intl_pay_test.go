@@ -13,7 +13,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 	pluginapi "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 

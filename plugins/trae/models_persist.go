@@ -1,33 +1,4 @@
-// models_persist.go — v0.12.63: persist each variant's last successful model
-// discovery INTO the credential files themselves (top-level "model_cache"
-// key), so the last-known-good catalog survives host restarts and upstream
-// outages. Port of the workbuddy v0.9.38 design onto trae's cn/solo/intl
-// variant namespaces.
-//
-// Why: modelsForVariant / intlhandleModelForAuth have exactly one fallback —
-// the compiled-in static catalogs. Those are guesses frozen at release time;
-// a discovery outage (or a restart before the first successful discovery)
-// advertised them as if they were upstream truth. Persisting the snapshot
-// means the failure ladder serves REAL upstream data (change-guarded) before
-// touching the static guess.
-//
-// Snapshot semantics: the persisted list is the ADVERTISED catalog — ids
-// already carry the variant suffix ("-solo"/"-intl") and the Intl virtuals
-// (auto/work) — because exclusions and host routing both key on the
-// advertised id. The list is PRE-exclusion, so excluded models stay visible
-// in the picker and un-excluding never needs an upstream round-trip.
-//
-// Scope guard: snapshots are per-VARIANT and only ever served back to
-// credentials of the SAME variant — a cn catalog must never satisfy a solo
-// or intl credential (different namespaces, suffixed ids).
-//
-// Write hygiene: every host.auth.save re-fires the watcher → model.for_auth.
-// persistModelSnapshot therefore writes ONLY when the discovered list
-// actually changed (full ModelInfo compare), so the loop converges after one
-// save per catalog change. Known gap (accepted): the scheduler's
-// auth.Auth.SaveAtomic rebuilds the file in its minimal legacy shape and
-// drops the snapshot; it re-stamps on the next successful discovery, and
-// same-variant peers still serve theirs.
+// Account-scoped last-good catalogs. Candidate unions live only in management.
 package main
 
 import (
@@ -71,8 +42,7 @@ type persistedModelCache struct {
 	// Realm is the variant namespace the catalog was discovered under
 	// ("cn" | "solo" | "intl").
 	Realm string `json:"realm"`
-	// FetchedAt is the discovery time (RFC3339 UTC), used to pick the
-	// freshest peer snapshot when the asking credential has none of its own.
+	// FetchedAt is the discovery time (RFC3339 UTC).
 	FetchedAt string `json:"fetched_at"`
 	// Models is the advertised list (post-suffix, pre exclusion).
 	Models []pluginapi.ModelInfo `json:"models"`
@@ -108,34 +78,21 @@ func readModelCacheDoc(doc []byte) *persistedModelCache {
 }
 
 // persistedSnapshotForStorage resolves the last persisted snapshot for the
-// asking credential's variant: its own document first, then the freshest
-// same-variant peer document. Cross-variant snapshots are never served.
+// asking credential's variant: its own document first, then its own physical file. Peer catalogs are never
+// authorization evidence, even within the same variant.
 func persistedSnapshotForStorage(storageJSON []byte, variant string) ([]pluginapi.ModelInfo, bool) {
 	if snap := readModelCacheDoc(storageJSON); snap != nil && snap.Realm == variant {
 		return snap.Models, true
 	}
-	files, err := hostAuthListFn()
-	if err != nil || len(files) == 0 {
-		return nil, false
-	}
-	var best *persistedModelCache
-	for _, f := range files {
-		phys, err := hostAuthRawFn(f.AuthIndex)
-		if err != nil || len(phys) == 0 {
-			continue
-		}
-		c := readModelCacheDoc(phys)
-		if c == nil || c.Realm != variant {
-			continue
-		}
-		if best == nil || persistedFetchedAt(c) > persistedFetchedAt(best) {
-			best = c
+	// The host may hand us a storage projection without plugin keys. Only the
+	// same physical credential can supply last-good data, never a regional peer.
+	_, doc, ok := locateCredentialFile(storageJSON)
+	if ok {
+		if snap := readModelCacheDoc(doc); snap != nil && snap.Realm == variant {
+			return snap.Models, true
 		}
 	}
-	if best == nil {
-		return nil, false
-	}
-	return best.Models, true
+	return nil, false
 }
 
 // persistedFetchedAt renders the snapshot's discovery time for comparison;
@@ -151,31 +108,48 @@ func persistedFetchedAt(c *persistedModelCache) string {
 // fresh snapshot into it. Best-effort: failures are logged, never propagated
 // — a persist miss only means the next restart re-discovers from scratch.
 func persistModelSnapshot(storageJSON []byte, variant string, models []pluginapi.ModelInfo) {
-	name, doc, ok := locateCredentialFile(storageJSON)
+	name, _, ok := locateCredentialFile(storageJSON)
 	if !ok {
-		log.Printf("models: variant=%s snapshot persist skipped — credential file not located", variant)
 		return
 	}
-	if existing := readModelCacheDoc(doc); existing != nil && existing.Realm == variant && samePersistedModels(existing.Models, models) {
-		// Unchanged — a save here would re-fire the watcher → model.for_auth
-		// for zero information. This guard is what makes the write loop
-		// converge.
-		return
-	}
-	merged, err := mergeModelCacheIntoDoc(doc, &persistedModelCache{
-		Realm:     variant,
-		FetchedAt: time.Now().UTC().Format(time.RFC3339),
-		Models:    models,
-	})
+	files, err := hostAuthListFn()
 	if err != nil {
-		log.Printf("models: variant=%s snapshot merge failed: %v", variant, err)
 		return
 	}
-	if err := hostAuthSaveFn(name, merged); err != nil {
-		log.Printf("models: variant=%s snapshot persist failed: %v", variant, err)
+	index := ""
+	for _, f := range files {
+		if f.Name == name {
+			index = f.AuthIndex
+			break
+		}
+	}
+	if index == "" {
 		return
 	}
-	log.Printf("models: variant=%s snapshot persisted into %s (%d model(s))", variant, name, len(models))
+	unlock := accountOperationLock(index)
+	defer unlock()
+	snapshot, err := freshAuthSnapshot(index)
+	if err != nil {
+		log.Printf("models: snapshot skipped: %v", err)
+		return
+	}
+	// Discovery must still belong to the same token/variant after waiting for
+	// concurrent maintenance; otherwise do not stamp a stale entitlement.
+	if snapshot.Auth.AccessToken != extractTraeAccessToken(storageJSON) || snapshot.Auth.Variant != variant {
+		return
+	}
+	doc := snapshot.Raw
+	if existing := readModelCacheDoc(doc); existing != nil && existing.Realm == variant && samePersistedModels(existing.Models, models) {
+		return
+	}
+	merged, err := mergeModelCacheIntoDoc(doc, &persistedModelCache{Realm: variant, FetchedAt: time.Now().UTC().Format(time.RFC3339), Models: models})
+	if err != nil {
+		log.Printf("models: snapshot merge failed: %v", err)
+		return
+	}
+	if err = maintenanceAuthSave(snapshot.File.Name, merged); err != nil {
+		log.Printf("models: snapshot save failed: %v", err)
+	}
 }
 
 // locateCredentialFile matches the asking credential to its file by access
@@ -196,7 +170,7 @@ func locateCredentialFile(storageJSON []byte) (name string, doc []byte, ok bool)
 		if err != nil || len(phys) == 0 {
 			continue
 		}
-		if extractTraeAccessToken(phys) == tok {
+		if extractTraeAccessToken(phys) == tok && sniffVariantFromJSON(phys) == sniffVariantFromJSON(storageJSON) {
 			return f.Name, phys, true
 		}
 	}
@@ -324,4 +298,30 @@ func physicalDocByName(name string) []byte {
 		return phys
 	}
 	return nil
+}
+
+// modelStorageWithAccessToken updates an in-memory lookup document after a
+// safely persisted refresh. It is never written as a credential replacement.
+func modelStorageWithAccessToken(raw []byte, token string) []byte {
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(raw, &doc) != nil || doc == nil {
+		return raw
+	}
+	value, _ := json.Marshal(token)
+	if nested, ok := doc["auth"]; ok {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(nested, &fields) == nil && fields != nil {
+			fields["accessToken"] = value
+			doc["auth"], _ = json.Marshal(fields)
+		} else {
+			return raw
+		}
+	} else {
+		doc["accessToken"] = value
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return raw
+	}
+	return out
 }

@@ -46,10 +46,10 @@ func TestExchangeShortCircuitsOnBusinessRejection(t *testing.T) {
 	}
 }
 
-// TestExchangeContinuesOn404AndHTML: a 404 with an HTML body is a transport
+// TestExchangeDoesNotReplayOn404AndHTML: a 404 with an HTML body is a transport
 // concern, not an account state — the fan-out must move on and succeed on
 // the next candidate (both servers hit).
-func TestExchangeContinuesOn404AndHTML(t *testing.T) {
+func TestExchangeDoesNotReplayOn404AndHTML(t *testing.T) {
 	var aHits, bHits int32
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&aHits, 1)
@@ -64,20 +64,17 @@ func TestExchangeContinuesOn404AndHTML(t *testing.T) {
 	defer b.Close()
 
 	raw, err := exchangeTokenCandidates([]string{a.URL + "/x", b.URL + "/x"}, []byte(`{}`))
-	if err != nil {
-		t.Fatalf("exchange should fall through the 404: %v", err)
+	if err == nil || raw != nil {
+		t.Fatal("ambiguous exchange must fail without retry")
 	}
-	if at := extractExchangeAccessToken(raw); at != "tok" {
-		t.Fatalf("unexpected body: %s", raw)
-	}
-	if atomic.LoadInt32(&aHits) == 0 || atomic.LoadInt32(&bHits) == 0 {
-		t.Fatalf("expected both candidates hit (a=%d b=%d)", aHits, bHits)
+	if atomic.LoadInt32(&aHits) != 1 || atomic.LoadInt32(&bHits) != 0 {
+		t.Fatalf("unexpected fanout a=%d b=%d", aHits, bHits)
 	}
 }
 
-// TestExchangeContinuesOn5xx: a 500 without the ResponseMetadata.Error.Code
+// TestExchangeDoesNotReplayOn5xx: a 500 without the ResponseMetadata.Error.Code
 // envelope is an outage, not a rejection — keep falling back.
-func TestExchangeContinuesOn5xx(t *testing.T) {
+func TestExchangeDoesNotReplayOn5xx(t *testing.T) {
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"boom"}`))
@@ -89,11 +86,8 @@ func TestExchangeContinuesOn5xx(t *testing.T) {
 	defer b.Close()
 
 	raw, err := exchangeTokenCandidates([]string{a.URL + "/x", b.URL + "/x"}, []byte(`{}`))
-	if err != nil {
-		t.Fatalf("exchange should fall through the 5xx: %v", err)
-	}
-	if at := extractExchangeAccessToken(raw); at != "tok" {
-		t.Fatalf("unexpected body: %s", raw)
+	if err == nil || raw != nil {
+		t.Fatal("5xx exchange must not retry code")
 	}
 }
 

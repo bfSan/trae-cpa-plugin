@@ -1,9 +1,12 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
-	"log"
+	"errors"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"net/http"
 	"net/url"
 	"os"
@@ -11,222 +14,215 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	intlupstream "github.com/mmqz/cpa-multi-plugins/plugins/trae/intlupstream"
-	cnupstream "github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
-
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// -----------------------------------------------------------------------------
-// v0.12.17: disk-persisted pending login + completed-outcome cache.
-//
-// Why: every in-flight login lives ONLY in process memory (loginStates /
-// intlloginStates). A docker restart, host upgrade or any process bounce
-// between "click 登录" and "paste the redirect URL" wipes the state and the
-// paste box answers the generic "unknown or expired login state" — reported
-// by the user as 回调未完成登录 / 粘贴链接也不行. The pending record is
-// persisted to <AuthDir>/.trae-pending-login.json at start-login and
-// transparently restored on the callback / submit / poll paths, so a paste
-// completes even after a restart. The file name is dot-prefixed so the
-// auth-file claim logic (adopt.go matches prefixes "trae-cn-", "trae-solo-cn-",
-// "trae-intl-") never mistakes it for a credential.
-// -----------------------------------------------------------------------------
+const pendingLoginFileName = ".trae-oauth-pending"
+const oauthPendingMaxFiles = 128
+const oauthPendingMaxBytes = 128 << 10
+const loginOutcomeTTL = 10 * time.Minute
 
-const pendingLoginFileName = ".trae-pending-login.json"
-
-// loginSelfCompleteGrace is the window a LIVE (non-restored) login gives the
-// host's auth.login.poll to consume the completed callback before the plugin
-// finishes the login itself (v0.12.23). Var (not const) so tests can shrink it.
+var errOAuthStorage = errors.New("login persistence unavailable; retry this state without restarting")
 var loginSelfCompleteGrace = 15 * time.Second
 
-// spawnSelfCompleteCN arms the one-shot self-completion goroutine for a cn/solo
-// login whose callback was just accepted (paste box or browser redirect hit).
-// The grace window is snapshotted HERE, in the caller's goroutine, so the
-// spawned goroutine never re-reads the (test-mutable) global.
-func spawnSelfCompleteCN(lc *loginCtx) {
-	lc.selfOnce.Do(func() {
-		grace := loginSelfCompleteGrace
-		go selfCompleteCNAfterGrace(lc, grace)
-	})
-}
-
-// selfCompleteCNAfterGrace finishes a cn/solo login in-process. Restored
-// logins complete immediately: the host poll channel died with the old
-// process, so nobody else can drain the state (v0.12.17 behavior).
-//
-// Live logins (v0.12.23) first give the host poll a grace window — while the
-// CPA login dialog stays open its poll consumes the state within seconds and
-// saves the credential through the normal host path. But if the dialog was
-// closed / the page navigated away / the host poll loop ended, nobody would
-// ever drain the captured authCode: the login silently stalled at
-// "回调已收到，正在交换凭证" until the 15-minute TTL with no credential —
-// the reported "提交了链接仍然不生成凭证". After the grace, LoadAndDelete
-// claims exclusive ownership: a win means no poll consumed the state and the
-// plugin exchanges + writes the credential file itself; a loss means the host
-// path already finished the login and there is nothing to do.
-func selfCompleteCNAfterGrace(lc *loginCtx, grace time.Duration) {
-	if lc.restored {
-		lc.restored = false // spawn once per restored login
-		selfCompleteCN(lc, "restored")
-		return
-	}
-	time.Sleep(grace)
-	if _, owned := loginStates.LoadAndDelete(lc.state); !owned {
-		return // host poll consumed (or janitor reaped) the state first
-	}
-	selfCompleteCN(lc, "grace")
-}
-
-// spawnSelfCompleteIntl is the intl counterpart of spawnSelfCompleteCN.
-func spawnSelfCompleteIntl(lc *intlloginCtx) {
-	lc.selfOnce.Do(func() {
-		grace := loginSelfCompleteGrace
-		go selfCompleteIntlAfterGrace(lc, grace)
-	})
-}
-
-// selfCompleteIntlAfterGrace is the intl counterpart of selfCompleteCNAfterGrace.
-func selfCompleteIntlAfterGrace(lc *intlloginCtx, grace time.Duration) {
-	if lc.restored {
-		lc.restored = false // spawn once per restored login
-		selfCompleteIntl(lc, "restored")
-		return
-	}
-	time.Sleep(grace)
-	if _, owned := intlloginStates.LoadAndDelete(lc.state); !owned {
-		return // host poll consumed (or janitor reaped) the state first
-	}
-	selfCompleteIntl(lc, "grace")
-}
-
-// pendingLoginRecord is the serializable subset of loginCtx / intlloginCtx
-// needed to resume a login after a process restart. No listener is carried:
-// resource flows (the paste path) never need one.
 type pendingLoginRecord struct {
-	Flow          string `json:"flow"` // "cn" (cn+solo) | "intl"
-	State         string `json:"state"`
-	Variant       string `json:"variant,omitempty"`
-	LoginHost     string `json:"login_host,omitempty"`
-	CbURL         string `json:"cb_url,omitempty"`
-	CodeVerifier  string `json:"code_verifier"`
-	CodeChallenge string `json:"code_challenge,omitempty"`
-	DeviceID      string `json:"device_id"`
-	MachineID     string `json:"machine_id"`
-	// v0.12.76: 稳定设备身份的密钥对（登录起点解析）随 pending 记录落盘，
-	// 重启后的 self-complete 复用同一对，不再现铸。
-	DevicePublicKey  string `json:"device_public_key,omitempty"`
-	DevicePrivateKey string `json:"device_private_key,omitempty"`
-	AuthDir          string `json:"auth_dir"`
-	CreatedAt        int64  `json:"created_at"`
-	ExpiresAt        int64  `json:"expires_at"`
+	Flow             string         `json:"flow"`
+	State            string         `json:"state"`
+	Variant          string         `json:"variant,omitempty"`
+	LoginHost        string         `json:"login_host,omitempty"`
+	CbURL            string         `json:"cb_url,omitempty"`
+	CodeVerifier     string         `json:"code_verifier"`
+	CodeChallenge    string         `json:"code_challenge,omitempty"`
+	DeviceID         string         `json:"device_id"`
+	MachineID        string         `json:"machine_id"`
+	DevicePublicKey  string         `json:"device_public_key,omitempty"`
+	DevicePrivateKey string         `json:"device_private_key,omitempty"`
+	AuthDir          string         `json:"-"`
+	CreatedAt        int64          `json:"created_at"`
+	ExpiresAt        int64          `json:"expires_at"`
+	AuthCode         string         `json:"auth_code,omitempty"`
+	RefreshToken     string         `json:"refresh_token,omitempty"`
+	UserTag          string         `json:"user_tag,omitempty"`
+	CBUID            string         `json:"cb_uid,omitempty"`
+	CBNickname       string         `json:"cb_nickname,omitempty"`
+	Progress         *loginProgress `json:"progress,omitempty"`
+}
+type oauthPendingStore struct {
+	dir  string
+	fd   int
+	lock *os.File
+	key  []byte
 }
 
-// authDirCache remembers the last host-provided AuthDir. The resource routes
-// (oauth_callback / oauth_submit) carry NO Host context in ManagementRequest,
-// so restore uses the most recent dir seen on any RPC that has one
-// (start / poll / parse / refresh). After a restart the host parses existing
-// credentials at boot, which re-warms the cache before the user can paste.
+var pendingStores = struct {
+	sync.Mutex
+	stores map[string]*oauthPendingStore
+}{stores: make(map[string]*oauthPendingStore)}
 var authDirCache struct {
 	sync.Mutex
 	dir string
 }
 
 func rememberAuthDir(dir string) {
-	dir = strings.TrimSpace(dir)
-	if dir == "" {
-		return
+	if dir = strings.TrimSpace(dir); dir != "" {
+		authDirCache.Lock()
+		authDirCache.dir = dir
+		authDirCache.Unlock()
 	}
-	authDirCache.Lock()
-	authDirCache.dir = dir
-	authDirCache.Unlock()
 }
-
-// cachedAuthDir returns the remembered AuthDir, falling back to <cwd>/auths
-// (the CLIProxyAPI default layout) as a read-only best effort.
 func cachedAuthDir() string {
 	authDirCache.Lock()
-	dir := authDirCache.dir
-	authDirCache.Unlock()
-	if dir != "" {
-		return dir
-	}
-	if wd, err := os.Getwd(); err == nil {
-		cand := filepath.Join(wd, "auths")
-		if st, statErr := os.Stat(cand); statErr == nil && st.IsDir() {
-			return cand
-		}
-	}
-	return ""
+	defer authDirCache.Unlock()
+	return authDirCache.dir
 }
-
-// captureAuthDir extracts Host.AuthDir from any pluginapi RPC payload that
-// carries a HostConfigSummary and remembers it for the resource-route restore
-// path (ManagementRequest itself has no Host context).
-func captureAuthDir(request []byte) {
-	if len(request) == 0 {
-		return
-	}
-	var probe struct {
+func captureAuthDir(raw []byte) {
+	var req struct {
 		Host struct {
-			AuthDir string `json:"AuthDir"`
-		} `json:"Host"`
-	}
-	if err := json.Unmarshal(request, &probe); err == nil {
-		rememberAuthDir(probe.Host.AuthDir)
-		// Opportunistic sweep: an expired pending record that nobody ever
-		// pasted would otherwise linger in the auth dir (listed by the host
-		// as a type-less entry). loadPendingLogin removes it on read.
-		if dir := cachedAuthDir(); dir != "" {
-			loadPendingLogin(dir)
+			AuthDir      string
+			AuthDirSnake string `json:"auth_dir"`
 		}
 	}
-}
-
-func pendingLoginPath(authDir string) string {
-	return filepath.Join(authDir, pendingLoginFileName)
-}
-
-func persistPendingLogin(rec pendingLoginRecord) {
-	dir := strings.TrimSpace(rec.AuthDir)
-	if dir == "" || rec.State == "" {
-		return
+	if json.Unmarshal(raw, &req) == nil {
+		dir := req.Host.AuthDir
+		if dir == "" {
+			dir = req.Host.AuthDirSnake
+		}
+		rememberAuthDir(dir)
 	}
-	raw, err := json.Marshal(rec)
+}
+func pendingLoginPath(dir string) string { return filepath.Join(dir, pendingLoginFileName) }
+func oauthPendingName(state string) string {
+	s := sha256.Sum256([]byte(state))
+	return hex.EncodeToString(s[:]) + ".pending"
+}
+func oauthRandomHex(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", errOAuthStorage
+	}
+	return hex.EncodeToString(b), nil
+}
+func validOAuthState(s string) bool {
+	if len(s) < 1 || len(s) > 128 {
+		return false
+	}
+	for _, c := range s {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+func validOAuthPendingName(n string) bool {
+	if len(n) != 72 || !strings.HasSuffix(n, ".pending") {
+		return false
+	}
+	_, err := hex.DecodeString(n[:64])
+	return err == nil && strings.ToLower(n) == n
+}
+func validOAuthPendingRecord(r *pendingLoginRecord) bool {
+	if !validOAuthState(r.State) || (r.Flow != "cn" && r.Flow != "intl") || r.CodeVerifier == "" || len(r.CodeVerifier) > 128 {
+		return false
+	}
+	if r.CreatedAt <= 0 || r.CreatedAt > time.Now().Add(time.Minute).Unix() || r.ExpiresAt <= r.CreatedAt || r.ExpiresAt > r.CreatedAt+int64((loginTTL+loginOutcomeTTL)/time.Second) {
+		return false
+	}
+	if p := r.Progress; p != nil {
+		if p.Owner != "" && p.Owner != "host" && p.Owner != "self" {
+			return false
+		}
+		if p.Token != nil && (!p.ExchangeStarted || p.Token.Access == "") {
+			return false
+		}
+		if p.Result != nil && (p.Token == nil || p.Result.FileName == "" || filepath.Base(p.Result.FileName) != p.Result.FileName || !json.Valid(p.Result.StorageJSON)) {
+			return false
+		}
+		if p.Saved && (p.Result == nil || p.Owner != "self") {
+			return false
+		}
+	}
+	return true
+}
+
+// Caller holds pendingStores mutex. Pin at most one production directory;
+// tests can close stores explicitly. No cwd/HOME fallback and no symlink paths.
+func pendingStore(dir string) (*oauthPendingStore, error) {
+	if !filepath.IsAbs(dir) {
+		return nil, errOAuthStorage
+	}
+	dir = filepath.Clean(dir)
+	if s := pendingStores.stores[dir]; s != nil {
+		return s, nil
+	}
+	if len(pendingStores.stores) >= 128 {
+		return nil, errOAuthStorage
+	}
+	s, err := openOAuthPendingStore(pendingLoginPath(dir))
 	if err != nil {
-		return
+		return nil, err
 	}
-	_ = os.WriteFile(pendingLoginPath(dir), raw, 0o600)
+	if s == nil {
+		return nil, errOAuthStorage
+	}
+	pendingStores.stores[dir] = s
+	return s, nil
 }
-
-func loadPendingLogin(authDir string) (pendingLoginRecord, bool) {
-	if strings.TrimSpace(authDir) == "" {
+func persistPendingLogin(rec pendingLoginRecord) error {
+	if rec.AuthDir == "" {
+		return nil
+	}
+	if rec.CreatedAt == 0 {
+		rec.CreatedAt = time.Now().Unix()
+	}
+	pendingStores.Lock()
+	defer pendingStores.Unlock()
+	s, err := pendingStore(rec.AuthDir)
+	if err != nil {
+		return err
+	}
+	return s.write(&rec)
+}
+func loadPendingLogin(dir string) (pendingLoginRecord, bool) { return loadPendingLoginState(dir, "") }
+func loadPendingLoginState(dir, state string) (pendingLoginRecord, bool) {
+	pendingStores.Lock()
+	defer pendingStores.Unlock()
+	if dir == "" {
 		return pendingLoginRecord{}, false
 	}
-	raw, err := os.ReadFile(pendingLoginPath(authDir))
+	s, err := pendingStore(dir)
 	if err != nil {
 		return pendingLoginRecord{}, false
 	}
-	var rec pendingLoginRecord
-	if err := json.Unmarshal(raw, &rec); err != nil {
+	if state != "" {
+		if !validOAuthState(state) {
+			return pendingLoginRecord{}, false
+		}
+		r, err := s.read(oauthPendingName(state))
+		if err != nil || time.Now().Unix() >= r.ExpiresAt {
+			return pendingLoginRecord{}, false
+		}
+		r.AuthDir = dir
+		return *r, true
+	}
+	records, err := s.records()
+	if err != nil || len(records) != 1 {
 		return pendingLoginRecord{}, false
 	}
-	if rec.State == "" || time.Now().After(time.Unix(rec.ExpiresAt, 0)) {
-		_ = os.Remove(pendingLoginPath(authDir))
-		return pendingLoginRecord{}, false
-	}
-	return rec, true
+	records[0].AuthDir = dir
+	return *records[0], true
 }
 
-func clearPendingLogin(authDir string) {
-	if strings.TrimSpace(authDir) == "" {
+// No state means NO deletion, never an arbitrary other login's record.
+func clearPendingLogin(dir string, states ...string) {
+	if dir == "" || len(states) != 1 || !validOAuthState(states[0]) {
 		return
 	}
-	_ = os.Remove(pendingLoginPath(authDir))
+	pendingStores.Lock()
+	defer pendingStores.Unlock()
+	s, err := pendingStore(dir)
+	if err == nil {
+		s.remove(oauthPendingName(states[0]))
+	}
 }
-
-// stateIsLive reports whether state is a live key in either login map.
 func stateIsLive(state string) bool {
 	if state == "" {
 		return false
@@ -238,62 +234,86 @@ func stateIsLive(state string) bool {
 	return ok
 }
 
-// restorePendingLoginState re-materializes a disk-persisted pending login into
-// the right in-memory map and returns its state key ("" when nothing restorable).
-// With a non-empty state it must match the record's own state — the PKCE pair
-// belongs to that login only, so cross-completing a DIFFERENT live login with a
-// stale URL is refused (the upstream ExchangeToken would reject it anyway).
-// With an empty state (URL carries no state/loginTraceID) the record is adopted
-// as the single pending login.
+var restorePendingMu sync.Mutex
+
 func restorePendingLoginState(state string) string {
-	dir := cachedAuthDir()
-	if dir == "" {
+	restorePendingMu.Lock()
+	defer restorePendingMu.Unlock()
+	if stateIsLive(state) {
+		return state
+	}
+	if !admitLogin() {
 		return ""
 	}
-	rec, ok := loadPendingLogin(dir)
+	rec, ok := loadPendingLoginState(cachedAuthDir(), state)
 	if !ok {
 		return ""
 	}
-	if state != "" && rec.State != state {
-		return ""
+	p := rec.Progress
+	if p == nil {
+		p = &loginProgress{CreatedAt: rec.CreatedAt}
 	}
-	if stateIsLive(rec.State) {
-		return rec.State // already live — nothing to restore
+	if rec.Flow == "intl" {
+		lc := &intlloginCtx{state: rec.State, cbURL: rec.CbURL, expires: time.Unix(rec.ExpiresAt, 0), loginTraceID: rec.State, codeVerifier: rec.CodeVerifier, codeChallenge: rec.CodeChallenge, deviceID: rec.DeviceID, machineID: rec.MachineID, loginHost: rec.LoginHost, authDir: rec.AuthDir, devicePublicKey: rec.DevicePublicKey, devicePrivateKey: rec.DevicePrivateKey, restored: true, authCode: rec.AuthCode, userTag: rec.UserTag, cbUID: rec.CBUID, cbNickname: rec.CBNickname}
+		restoreLoginProgress(&lc.loginProgress, p)
+		intlloginStates.LoadOrStore(rec.State, lc)
+	} else {
+		lc := &loginCtx{variant: rec.Variant, state: rec.State, cbURL: rec.CbURL, expires: time.Unix(rec.ExpiresAt, 0), loginTraceID: rec.State, codeVerifier: rec.CodeVerifier, codeChallenge: rec.CodeChallenge, deviceID: rec.DeviceID, machineID: rec.MachineID, loginHost: rec.LoginHost, authDir: rec.AuthDir, devicePublicKey: rec.DevicePublicKey, devicePrivateKey: rec.DevicePrivateKey, restored: true, authCode: rec.AuthCode, refreshToken: rec.RefreshToken, userTag: rec.UserTag, cbUID: rec.CBUID, cbNickname: rec.CBNickname}
+		restoreLoginProgress(&lc.loginProgress, p)
+		loginStates.LoadOrStore(rec.State, lc)
 	}
-	expires := time.Unix(rec.ExpiresAt, 0)
-	switch rec.Flow {
-	case "intl":
-		intlloginStates.Store(rec.State, &intlloginCtx{
-			listener: nil, state: rec.State, cbURL: rec.CbURL, expires: expires,
-			loginTraceID: rec.State, codeVerifier: rec.CodeVerifier,
-			codeChallenge: rec.CodeChallenge, deviceID: rec.DeviceID,
-			machineID: rec.MachineID, loginHost: rec.LoginHost, authDir: dir,
-			devicePublicKey: rec.DevicePublicKey, devicePrivateKey: rec.DevicePrivateKey,
-			restored: true,
-		})
-		return rec.State
-	default: // "cn" — cn + solo share the flow map
-		loginStates.Store(rec.State, &loginCtx{
-			listener: nil, variant: rec.Variant, state: rec.State, cbURL: rec.CbURL,
-			expires: expires, loginTraceID: rec.State, codeVerifier: rec.CodeVerifier,
-			codeChallenge: rec.CodeChallenge, deviceID: rec.DeviceID,
-			machineID: rec.MachineID, authDir: dir,
-			devicePublicKey: rec.DevicePublicKey, devicePrivateKey: rec.DevicePrivateKey,
-			restored: true,
-		})
-		return rec.State
+	return rec.State
+}
+func spawnSelfCompleteCN(lc *loginCtx) {
+	lc.mu.Lock()
+	if lc.selfRunning || lc.Owner == "host" || lc.Saved {
+		lc.mu.Unlock()
+		return
+	}
+	lc.selfRunning = true
+	grace := loginSelfCompleteGrace
+	lc.mu.Unlock()
+	go func() {
+		defer func() { lc.mu.Lock(); lc.selfRunning = false; lc.mu.Unlock() }()
+		selfCompleteCNAfterGrace(lc, grace)
+	}()
+}
+func spawnSelfCompleteIntl(lc *intlloginCtx) {
+	lc.mu.Lock()
+	if lc.selfRunning || lc.Owner == "host" || lc.Saved {
+		lc.mu.Unlock()
+		return
+	}
+	lc.selfRunning = true
+	grace := loginSelfCompleteGrace
+	lc.mu.Unlock()
+	go func() {
+		defer func() { lc.mu.Lock(); lc.selfRunning = false; lc.mu.Unlock() }()
+		selfCompleteIntlAfterGrace(lc, grace)
+	}()
+}
+func selfCompleteCNAfterGrace(lc *loginCtx, grace time.Duration) {
+	time.Sleep(grace)
+	if v, ok := loginStates.Load(lc.state); ok && v == lc {
+		selfCompleteCN(lc, "callback")
 	}
 }
-
-// -----------------------------------------------------------------------------
-// completed-outcome cache: a paste arriving after the login already finished
-// (auto-callback succeeded, or the panel poll drained the state between two
-// pastes) used to get a confusing "unknown or expired login state". Recent
-// outcomes are remembered so a re-paste answers "already completed" (success)
-// or the original error instead.
-// -----------------------------------------------------------------------------
-
-const loginOutcomeTTL = 10 * time.Minute
+func selfCompleteIntlAfterGrace(lc *intlloginCtx, grace time.Duration) {
+	time.Sleep(grace)
+	if v, ok := intlloginStates.Load(lc.state); ok && v == lc {
+		selfCompleteIntl(lc, "callback")
+	}
+}
+func selfCompleteCN(lc *loginCtx, source string) {
+	if _, err := advanceLoginCN(lc, true); err != nil {
+		recordLoginOutcome(lc.state, false, err.Error())
+	}
+}
+func selfCompleteIntl(lc *intlloginCtx, source string) {
+	if _, err := advanceLoginIntl(lc, true); err != nil {
+		recordLoginOutcome(lc.state, false, err.Error())
+	}
+}
 
 type loginOutcome struct {
 	ok  bool
@@ -311,344 +331,33 @@ func recordLoginOutcome(state string, ok bool, msg string) {
 		return
 	}
 	outcomeCache.Lock()
+	defer outcomeCache.Unlock()
 	if outcomeCache.m == nil {
 		outcomeCache.m = make(map[string]loginOutcome)
 	}
-	outcomeCache.m[state] = loginOutcome{ok: ok, msg: msg, at: time.Now()}
-	outcomeCache.Unlock()
-}
-
-func lookupLoginOutcome(state string) (loginOutcome, bool) {
-	if state == "" {
-		return loginOutcome{}, false
+	for k, v := range outcomeCache.m {
+		if time.Since(v.at) > loginOutcomeTTL {
+			delete(outcomeCache.m, k)
+		}
 	}
+	if len(outcomeCache.m) >= oauthPendingMaxFiles {
+		for k := range outcomeCache.m {
+			delete(outcomeCache.m, k)
+			break
+		}
+	}
+	outcomeCache.m[state] = loginOutcome{ok, msg, time.Now()}
+}
+func lookupLoginOutcome(state string) (loginOutcome, bool) {
 	outcomeCache.Lock()
 	defer outcomeCache.Unlock()
 	o, ok := outcomeCache.m[state]
-	if !ok {
-		return loginOutcome{}, false
-	}
-	if time.Since(o.at) > loginOutcomeTTL {
+	if ok && time.Since(o.at) > loginOutcomeTTL {
 		delete(outcomeCache.m, state)
-		return loginOutcome{}, false
+		ok = false
 	}
-	return o, true
+	return o, ok
 }
-
-// -----------------------------------------------------------------------------
-// v0.12.17: self-completion for RESTORED pending logins. After a host restart
-// the host's own oauth-session registry is empty, so get-auth-status answers
-// "unknown or expired state" and never reaches the plugin's PollLogin — the
-// paste would complete the callback but the credential would never be saved.
-// Restored logins therefore finish inside the plugin: ExchangeToken +
-// GetUserInfo, write the credential file straight into AuthDir (the host
-// watcher claims it, same as a manual import), register in the pool and clean
-// up. Non-restored logins keep the host-poll path (single completion point).
-// -----------------------------------------------------------------------------
-
-// selfCompleteCN finishes a cn/solo login in-process (exchange + GetUserInfo
-// + credential file write). source tags the trigger path in logs/outcomes:
-// "restored" (post-restart paste) or "grace" (live login the host poll never
-// claimed within loginSelfCompleteGrace — v0.12.23).
-func selfCompleteCN(lc *loginCtx, source string) {
-	state := lc.state
-	fail := func(msg string) {
-		recordLoginOutcome(state, false, msg)
-		clearPendingLogin(lc.authDir)
-		loginStates.Delete(state)
-		log.Printf("trae self-complete (%s, %s) failed: %s", source, state, msg)
-	}
-	// v0.12.74：监听器路径也会 arm self-complete（issue #38 修复），而
-	// handleCallbackConn 的错误回调（error=…/isRedirect=false）只置 lc.err
-	// ——先如实回显回调错误，别落成误导性的「no authCode/refreshToken」。
-	if lc.err != nil {
-		fail(lc.err.Error())
-		return
-	}
-	if lc.authCode == "" && lc.refreshToken == "" {
-		fail("no authCode/refreshToken after restore")
-		return
-	}
-	var accessToken, refreshToken string
-	var expiresAt int64
-	// v0.12.24: device key pair for the auth-code exchange (device binding).
-	var cnDevicePublicKey, cnDevicePrivateKey string
-	if lc.refreshToken != "" {
-		a := &auth.Auth{
-			RefreshToken: lc.refreshToken,
-			APIHost:      oauthDefaultHost,
-			Domain:       "trae.cn",
-			MachineID:    lc.machineID,
-			DeviceID:     lc.deviceID,
-			// v0.12.77: 携带登录设备密钥对（回调 echo 过 uid 时为按账号
-			// 派生身份），绑定续期以该设备签名，不再落回裸续期。
-			DevicePublicKey:  lc.devicePublicKey,
-			DevicePrivateKey: lc.devicePrivateKey,
-			// v0.12.60: 同 oauth_callback——refreshLocked 以谱系选 OAuth
-			// ClientID，裸 Auth 缺 variant 会把 SOLO 凭证换发成 cn 类。
-			Variant: lc.variant,
-		}
-		if err := upstreamClient.RefreshToken(a); err != nil {
-			accessToken, refreshToken = lc.refreshToken, lc.refreshToken
-		} else {
-			accessToken, refreshToken, expiresAt = a.AccessToken, a.RefreshToken, a.ExpiresAt
-		}
-	} else {
-		// v0.12.76: 复用登录起点携带的稳定身份密钥对（无则回退解析
-		// 稳定身份），不再每次交换现铸新密钥。
-		pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, lc.variant)
-		if keyErr != nil {
-			fail(fmt.Sprintf("device key pair: %v", keyErr))
-			return
-		}
-		di := buildOfficialDeviceInfo(
-			lc.deviceID, lc.machineID, oauthPlatformCodeFor(lc.variant), oauthDeviceName,
-			oauthDeviceBrand, cnupstream.IdeVersion, oauthDeviceType, oauthOSVersion, pubKeyPEM,
-		)
-		tokenBody := map[string]any{
-			"ClientID":     cnupstream.ClientIDFor(lc.variant),
-			"AuthCode":     lc.authCode,
-			"CodeVerifier": lc.codeVerifier,
-			"DeviceInfo":   di,
-			"IDEVersion":   cnupstream.IdeVersion,
-		}
-		bodyBytes, _ := json.Marshal(tokenBody)
-		tokenRaw, exErr := exchangeTokenCandidates(
-			authCodeExchangeURLsCN(lc.loginHost), bodyBytes)
-		if exErr != nil {
-			fail(exErr.Error())
-			return
-		}
-		accessToken, refreshToken, expiresAt = parseExchangeTokenResponse(tokenRaw)
-		if accessToken == "" && refreshToken == "" {
-			fail("ExchangeToken: no token in response")
-			return
-		}
-		if accessToken == "" {
-			accessToken = refreshToken
-		}
-		cnDevicePublicKey, cnDevicePrivateKey = pubKeyPEM, privKeyPEM
-	}
-	a := &auth.Auth{
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresAt:    expiresAt,
-		APIHost:      oauthDefaultHost,
-		Domain:       "trae.cn",
-		MachineID:    lc.machineID,
-		DeviceID:     lc.deviceID,
-		Variant:      lc.variant,
-	}
-	uid, nickname, entID, err := upstreamClient.GetUserInfo(a)
-	if err != nil {
-		log.Printf("trae self-complete GetUserInfo: %v — proceeding", err)
-	}
-	// v0.12.25: GetUserInfo → callback userInfo echo → stable unknown
-	// fallback. The old per-login loginTraceID fallback minted a fresh
-	// trae-<uuid>.json per submission — the duplicate-account bug.
-	// v0.12.27: pass the login VARIANT (cn vs solo get distinct unknown
-	// fallbacks — a solo login no longer collides with a cn login whose
-	// identity also failed to resolve).
-	uid = resolveLoginUID(uid, lc.cbUID, lc.variant)
-	nickname = resolveLoginNickname(nickname, lc.cbNickname)
-	a.UID = uid
-	a.Nickname = nickname
-	a.EnterpriseID = entID
-	storageJSON, _ := json.MarshalIndent(map[string]any{
-		"type":     providerName,
-		"provider": providerName,
-		"auth": map[string]any{
-			"accessToken":      a.AccessToken,
-			"refreshToken":     a.RefreshToken,
-			"expiresAt":        a.ExpiresAt,
-			"domain":           a.Domain,
-			"apiHost":          a.APIHost,
-			"machineId":        a.MachineID,
-			"deviceId":         a.DeviceID,
-			"variant":          a.Variant,
-			"devicePublicKey":  cnDevicePublicKey,
-			"devicePrivateKey": cnDevicePrivateKey,
-		},
-		"account": map[string]any{
-			"uid":          a.UID,
-			"enterpriseId": a.EnterpriseID,
-			"nickname":     a.Nickname,
-		},
-		"disabled": false,
-	}, "", "  ")
-	// v0.12.27: per-variant namespace — solo credentials land in
-	// trae-solo-cn-<uid>.json instead of overwriting the cn file of the
-	// same Trae account (the "solo became init" overwrite bug).
-	fileName := credentialFileName(lc.variant, uid)
-	if lc.authDir == "" {
-		fail("no AuthDir to write the credential file")
-		return
-	}
-	// v0.12.26: atomic temp+rename write — a bare os.WriteFile truncates the
-	// destination first, and the host's full auth-dir reconciliation reading
-	// the file mid-write deletes the credential from its manager (panel then
-	// shows fewer accounts than exist; verified 2026-09-04). See heal.go.
-	if err := atomicWriteJSON(filepath.Join(lc.authDir, fileName), storageJSON); err != nil {
-		fail("write credential file: " + err.Error())
-		return
-	}
-	// v0.12.26: re-save through host.auth.save so the manager record is
-	// upserted immediately — not subject to the watcher's hash-skip of the
-	// just-finished write. Failure is non-fatal: the file is already on disk.
-	if err := hostAuthSave(fileName, storageJSON); err != nil {
-		log.Printf("trae self-complete: post-save host.auth.save %s: %v", fileName, err)
-	}
-	accountPool.Add(a)
-	recordLoginOutcome(state, true, "")
-	clearPendingLogin(lc.authDir)
-	loginStates.Delete(state)
-	log.Printf("trae self-complete (%s): saved %s (uid=%s)", source, fileName, uid)
-}
-
-// selfCompleteIntl finishes an intl login in-process; source mirrors
-// selfCompleteCN ("restored" post-restart paste, "grace" unclaimed live
-// login — v0.12.23).
-func selfCompleteIntl(lc *intlloginCtx, source string) {
-	state := lc.state
-	fail := func(msg string) {
-		recordLoginOutcome(state, false, msg)
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		log.Printf("trae-intl self-complete (%s, %s) failed: %s", source, state, msg)
-	}
-	// v0.12.74：监听器路径也会 arm self-complete（issue #38 修复，intl 同修）
-	// ——错误回调只置 lc.err，先如实回显，别落成「no authCode」。
-	if lc.err != nil {
-		fail(lc.err.Error())
-		return
-	}
-	if lc.authCode == "" {
-		fail("no authCode after restore")
-		return
-	}
-	// v0.12.76: 复用登录起点携带的稳定身份密钥对（无则回退解析稳定
-	// 身份），不再每次交换现铸新密钥。
-	pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, variantIntl)
-	if keyErr != nil {
-		fail(fmt.Sprintf("device key pair: %v", keyErr))
-		return
-	}
-	di := intlbuildOfficialDeviceInfo(
-		lc.deviceID, lc.machineID, oauthPlatformCode, intlOauthDeviceName,
-		intlOauthDeviceBrand, loadedAppVersion(), intlOauthDeviceType, intlOauthOSVersion, pubKeyPEM,
-	)
-	tokenBody := map[string]any{
-		"ClientID":     intlupstreamClient.ClientID,
-		"AuthCode":     lc.authCode,
-		"CodeVerifier": lc.codeVerifier,
-		"DeviceInfo":   di,
-		"IDEVersion":   loadedAppVersion(),
-	}
-	tokenBytes, _ := json.Marshal(tokenBody)
-	tokenRaw, exErr := intlexchangeTokenCandidates(
-		intlauthCodeExchangeURLs(lc.loginHost, lc.userTag), tokenBytes)
-	if exErr != nil {
-		fail(exErr.Error())
-		return
-	}
-	var tokenEnv struct {
-		Result struct {
-			Token           string `json:"Token"`
-			AccessToken     string `json:"AccessToken"`
-			TokenExpireAt   int64  `json:"TokenExpireAt"`
-			RefreshToken    string `json:"RefreshToken"`
-			RefreshExpireAt int64  `json:"RefreshExpireAt"`
-		} `json:"Result"`
-	}
-	if err := json.Unmarshal(tokenRaw, &tokenEnv); err != nil {
-		fail(fmt.Sprintf("parse ExchangeToken: %v", err))
-		return
-	}
-	if tokenEnv.Result.AccessToken != "" && tokenEnv.Result.Token == "" {
-		tokenEnv.Result.Token = tokenEnv.Result.AccessToken
-	}
-	if tokenEnv.Result.Token == "" && tokenEnv.Result.RefreshToken == "" {
-		fail("ExchangeToken: no token in response")
-		return
-	}
-	a := &intlupstream.Auth{
-		AccessToken:  tokenEnv.Result.Token,
-		RefreshToken: tokenEnv.Result.RefreshToken,
-		ExpiresAt:    intlnormalizeExpiresAt(tokenEnv.Result.TokenExpireAt),
-		APIHost:      intlupstreamClient.OAuthHost,
-		Domain:       "trae.ai",
-		Region:       "US-East",
-		Scope:        "marscode-us",
-		Tenant:       "marscode",
-		UserIdentity: "Free",
-		AppLanguage:  "en",
-		AppVersion:   "1.0.0.1229",
-	}
-	uid, nickname, entID, err := intlupstreamClient.GetUserInfo(a)
-	if err != nil {
-		log.Printf("trae-intl self-complete GetUserInfo: %v — proceeding", err)
-	}
-	// v0.12.25: identity chain (see selfCompleteCN) — intl realm.
-	uid = resolveLoginUID(uid, lc.cbUID, "intl")
-	nickname = resolveLoginNickname(nickname, lc.cbNickname)
-	a.UID = uid
-	a.Nickname = nickname
-	a.EnterpriseID = entID
-	storageJSON, _ := json.MarshalIndent(map[string]any{
-		"type":     intlproviderName,
-		"provider": intlproviderName,
-		"auth": map[string]any{
-			"accessToken":      a.AccessToken,
-			"refreshToken":     a.RefreshToken,
-			"expiresAt":        a.ExpiresAt,
-			"domain":           a.Domain,
-			"apiHost":          a.APIHost,
-			"variant":          "intl",
-			"region":           a.Region,
-			"scope":            a.Scope,
-			"tenant":           a.Tenant,
-			"appLanguage":      a.AppLanguage,
-			"appVersion":       a.AppVersion,
-			"devicePublicKey":  pubKeyPEM,
-			"devicePrivateKey": privKeyPEM,
-		},
-		"account": map[string]any{
-			"uid":          a.UID,
-			"enterpriseId": a.EnterpriseID,
-			"nickname":     a.Nickname,
-		},
-		"disabled": false,
-	}, "", "  ")
-	fileName := fmt.Sprintf("%s-%s.json", intlproviderName, uid)
-	if lc.authDir == "" {
-		fail("no AuthDir to write the credential file")
-		return
-	}
-	// v0.12.26: atomic write + immediate host re-save (see the CN twin above).
-	if err := atomicWriteJSON(filepath.Join(lc.authDir, fileName), storageJSON); err != nil {
-		fail("write credential file: " + err.Error())
-		return
-	}
-	if err := hostAuthSave(fileName, storageJSON); err != nil {
-		log.Printf("trae-intl self-complete: post-save host.auth.save %s: %v", fileName, err)
-	}
-	recordLoginOutcome(state, true, "")
-	clearPendingLogin(lc.authDir)
-	intlloginStates.Delete(state)
-	log.Printf("trae-intl self-complete (%s): saved %s (uid=%s)", source, fileName, uid)
-}
-
-// -----------------------------------------------------------------------------
-// v0.12.21: GET /v0/resource/plugins/trae/login_status - live login state for
-// the panel status line. The host's get-auth-status maps a plugin "pending"
-// poll to a bare {"status":"wait"} and drops the message, so manager UIs show
-// an unexplained waiting state for the whole 15-minute TTL when the browser
-// cannot reach the 127.0.0.1 callback listener (remote / docker deployments).
-// This endpoint lets the plugin's own panel explain what is being waited on
-// and what to do next. Data only - the panel renders the words. No secrets:
-// loopback callback host:port, variant, ages, and the outcome message (the
-// same text paste result pages already show unauthenticated).
-// -----------------------------------------------------------------------------
 
 type loginStatusOutcome struct {
 	OK      bool   `json:"ok"`
@@ -657,6 +366,12 @@ type loginStatusOutcome struct {
 }
 
 type loginStatusPayload struct {
+	State         string `json:"state,omitempty"`
+	Stage         string `json:"stage,omitempty"`
+	Persistent    bool   `json:"persistent"`
+	Retryable     bool   `json:"retryable"`
+	Saved         bool   `json:"saved"`
+	Owner         string `json:"owner,omitempty"`
 	Pending       bool   `json:"pending"`
 	Restored      bool   `json:"restored"`
 	Variant       string `json:"variant,omitempty"`
@@ -697,7 +412,7 @@ func latestLoginOutcome() (loginOutcome, bool) {
 	var best loginOutcome
 	found := false
 	for _, o := range outcomeCache.m {
-		if !found || o.at.After(best.at) {
+		if time.Since(o.at) <= loginOutcomeTTL && (!found || o.at.After(best.at)) {
 			best, found = o, true
 		}
 	}
@@ -706,6 +421,7 @@ func latestLoginOutcome() (loginOutcome, bool) {
 
 // pendingSnapshot is the display-relevant slice of a live or restored login.
 type pendingSnapshot struct {
+	state            string
 	variant          string
 	cbURL            string
 	expires          time.Time
@@ -721,13 +437,13 @@ func snapshotPending() (pendingSnapshot, bool) {
 	now := time.Now()
 	var best pendingSnapshot
 	found := false
-	consider := func(variant, cbURL string, expires time.Time, restored, listenerAlive, cbRecv bool) {
+	consider := func(state, variant, cbURL string, expires time.Time, restored, listenerAlive, cbRecv bool) {
 		if !now.Before(expires) {
 			return
 		}
 		if !found || expires.After(best.expires) {
 			best = pendingSnapshot{
-				variant: variant, cbURL: cbURL, expires: expires,
+				state: state, variant: variant, cbURL: cbURL, expires: expires,
 				restored: restored, listenerAlive: listenerAlive, callbackReceived: cbRecv,
 			}
 			found = true
@@ -735,15 +451,23 @@ func snapshotPending() (pendingSnapshot, bool) {
 	}
 	loginStates.Range(func(_, v any) bool {
 		if lc, ok := v.(*loginCtx); ok {
+			lc.mu.Lock()
 			got := lc.authCode != "" || lc.refreshToken != "" || lc.err != nil
-			consider(lc.variant, lc.cbURL, lc.expires, lc.restored, lc.listener != nil, got)
+			if !lc.Saved && lc.Owner != "host" {
+				consider(lc.state, lc.variant, lc.cbURL, lc.expires, lc.restored, lc.listener != nil, got)
+			}
+			lc.mu.Unlock()
 		}
 		return true
 	})
 	intlloginStates.Range(func(_, v any) bool {
 		if lc, ok := v.(*intlloginCtx); ok {
+			lc.mu.Lock()
 			got := lc.authCode != "" || lc.err != nil
-			consider("intl", lc.cbURL, lc.expires, lc.restored, lc.listener != nil, got)
+			if !lc.Saved && lc.Owner != "host" {
+				consider(lc.state, "intl", lc.cbURL, lc.expires, lc.restored, lc.listener != nil, got)
+			}
+			lc.mu.Unlock()
 		}
 		return true
 	})
@@ -758,6 +482,7 @@ func handleLoginStatusResource() []byte {
 	now := time.Now()
 	payload := loginStatusPayload{}
 	if snap, ok := snapshotPending(); ok {
+		payload = oauthLoginStatus(snap.state)
 		payload.Pending = true
 		payload.Restored = snap.restored
 		payload.Variant = snap.variant
@@ -769,7 +494,8 @@ func handleLoginStatusResource() []byte {
 	} else if dir := cachedAuthDir(); dir != "" {
 		// loadPendingLogin also sweeps an expired record (cleanup side effect).
 		if rec, ok := loadPendingLogin(dir); ok {
-			payload.Pending = true
+			payload = oauthLoginStatus(rec.State)
+			payload.Pending = rec.Progress == nil || (!rec.Progress.Saved && rec.Progress.Owner != "host")
 			payload.Restored = true // not in memory -> only the disk record serves it
 			payload.Variant = rec.Variant
 			payload.CallbackHP = callbackHostPort(rec.CbURL)
@@ -780,9 +506,22 @@ func handleLoginStatusResource() []byte {
 	if o, ok := latestLoginOutcome(); ok {
 		payload.Outcome = &loginStatusOutcome{OK: o.ok, Message: o.msg, AgeSec: int64(time.Since(o.at).Seconds())}
 	}
+	// This legacy endpoint is public. Never disclose the capability-like state
+	// there; authenticated management status includes only its requested state.
+	payload.State = ""
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return []byte(`{"pending":false}`)
 	}
 	return raw
+}
+
+func restoreLoginProgress(dst, src *loginProgress) {
+	dst.CreatedAt = src.CreatedAt
+	dst.Owner = src.Owner
+	dst.ExchangeStarted = src.ExchangeStarted
+	dst.Token = src.Token
+	dst.Result = src.Result
+	dst.Saved = src.Saved
+	dst.Failure = src.Failure
 }

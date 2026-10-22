@@ -54,7 +54,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 // usageNoteDocKey is the note prefix marker owned by this writer. Everything

@@ -4,12 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 func TestClassify(t *testing.T) {
@@ -61,8 +62,11 @@ func testClient(fn rtFunc) *Client {
 
 func TestRefreshTokenExchange(t *testing.T) {
 	c := testClient(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == epExchangeBound {
+			return jsonResp(404, `{"error":"unsupported endpoint"}`), nil
+		}
 		if !strings.HasSuffix(r.URL.Path, EpExchange) {
-			return nil, errors.New("wrong path: " + r.URL.Path)
+			return nil, errors.New("wrong path")
 		}
 		if r.Header.Get("Content-Type") != "application/json" {
 			return nil, errors.New("missing content-type")
@@ -709,8 +713,11 @@ func TestRefreshLockedSendsLineageClientID(t *testing.T) {
 	for _, tc := range cases {
 		var gotClient string
 		c := testClient(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == epExchangeBound {
+				return jsonResp(404, `{"error":"unsupported endpoint"}`), nil
+			}
 			if !strings.HasSuffix(r.URL.Path, EpExchange) {
-				return nil, errors.New("wrong path: " + r.URL.Path)
+				return nil, errors.New("wrong path")
 			}
 			body, _ := io.ReadAll(r.Body)
 			var probe struct {
@@ -732,5 +739,30 @@ func TestRefreshLockedSendsLineageClientID(t *testing.T) {
 		if a.AccessToken != "newat" {
 			t.Errorf("%s: token not updated", tc.name)
 		}
+	}
+}
+
+func TestRefreshUncertainOutcomeNeverReplaysOtherIdentityOrOrigin(t *testing.T) {
+	for _, status := range []int{0, 200, 500, 408, 429} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			hits := 0
+			c := testClient(func(r *http.Request) (*http.Response, error) {
+				hits++
+				if status == 0 {
+					return nil, errors.New("connection lost after send")
+				}
+				return jsonResp(status, `{}`), nil
+			})
+			a := &auth.Auth{AccessToken: "old-access", RefreshToken: "old-refresh", Variant: "cn", APIHost: "https://oauth.example"}
+			if err := c.RefreshToken(a); err == nil {
+				t.Fatal("uncertain rotation reported success")
+			}
+			if hits != 1 {
+				t.Fatalf("ambiguous mutation replayed %d times", hits)
+			}
+			if a.AccessToken != "old-access" || a.RefreshToken != "old-refresh" {
+				t.Fatal("failed rotation changed tokens")
+			}
+		})
 	}
 }

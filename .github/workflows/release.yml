@@ -1,442 +1,104 @@
-name: Build & Release Plugins
-
+name: Trae CPA Plugin
 on:
   push:
-    tags:
-      - 'v*'
-    # Deep-audit A2 fix (v0.12.76): also run CI on main pushes so the branch
-    # badge reflects reality (previously the latest main-ref run was a
-    # cancelled dispatch, rendering the badge permanently "failing" while
-    # tag runs were green for 76+ consecutive releases).
-    branches:
-      - main
+    branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version tag (e.g. v0.1.0)'
-        required: true
-        default: 'v0.1.0-dev'
-
 permissions:
-  contents: write
-  packages: write
-
+  contents: read
 jobs:
-  build:
-    name: Build ${{ matrix.os }}-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+  test:
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      max-parallel: 5
-      matrix:
-        include:
-          - os: linux
-            arch: amd64
-            runner: ubuntu-latest
-            goos: linux
-            goarch: amd64
-            cc: gcc
-            ext: so
-          - os: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
-            cc: gcc
-            ext: so
-          # NOTE: darwin-amd64 used to ride the retired macos-13 Intel hosted
-          # runners (they queued forever and blocked the release job via
-          # needs: build). issue #7 brings the asset back as a CROSS build on
-          # the arm64 runner: Apple's clang accepts -arch x86_64 on Apple
-          # Silicon and the Go cgo toolchain drives it via CC. optional:true
-          # keeps a toolchain regression from blocking the other four assets.
-          - os: darwin
-            arch: amd64
-            runner: macos-14
-            goos: darwin
-            goarch: amd64
-            cc: "clang -arch x86_64"
-            ext: dylib
-            optional: true
-          - os: darwin
-            arch: arm64
-            runner: macos-14
-            goos: darwin
-            goarch: arm64
-            cc: clang
-            ext: dylib
-          - os: windows
-            arch: amd64
-            runner: windows-latest
-            goos: windows
-            goarch: amd64
-            cc: mingw-w64-x86_64-gcc
-            ext: dll
-    continue-on-error: ${{ matrix.optional || false }}
-
+    env:
+      TZ: UTC
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-          cache: false
-
-      - name: Set up MSYS2 (Windows only)
+          cache-dependency-path: plugins/trae/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Registry and repository boundary
+        run: python3 scripts/check-release.py
+      - name: Offline backend and panel tests
+        working-directory: plugins/trae
+        run: |
+          go test -race -count=1 ./...
+          go vet ./...
+          node --test panel.test.js
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {runner: ubuntu-latest, os: linux, arch: amd64, cc: gcc}
+          - {runner: ubuntu-24.04-arm, os: linux, arch: arm64, cc: gcc}
+          - {runner: macos-14, os: darwin, arch: arm64, cc: clang}
+          - {runner: macos-14, os: darwin, arch: amd64, cc: 'clang -arch x86_64'}
+          - {runner: windows-latest, os: windows, arch: amd64, cc: gcc}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: plugins/trae/go.sum
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Set up Windows C compiler
         if: matrix.os == 'windows'
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           install: mingw-w64-x86_64-gcc
-          update: false
           path-type: inherit
-
-      - name: Build all plugins (Windows)
-        if: matrix.os == 'windows'
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
-          CC: gcc
-        run: |
-          which gcc 2>&1 || echo "which gcc failed"
-          gcc --version 2>&1 | head -1 || echo "gcc invocation failed"
-          mkdir -p dist/${{ matrix.os }}-${{ matrix.arch }}
-          PLUGINS="workbuddy qoder trae zcode mimo"
-          for plugin in $PLUGINS; do
-            echo "=== Building $plugin ==="
-            cd plugins/$plugin
-            go mod download
-            VER="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-            VFLAG=""
-            [ -n "$VER" ] && VFLAG="-X main.version=$VER"
-            OUTPUT="../../dist/${{ matrix.os }}-${{ matrix.arch }}/${plugin}.${{ matrix.ext }}"
-            go build -buildmode=c-shared -trimpath -ldflags="-s -w $VFLAG" -o "$OUTPUT" .
-            if [ $? -eq 0 ]; then
-              echo "  ✅ $plugin built"
-            else
-              echo "  ❌ $plugin failed"
-              exit 1
-            fi
-            cd ../..
-          done
-        shell: msys2 {0}
-
-      - name: Build all plugins (non-Windows)
+      - name: Build on Unix
         if: matrix.os != 'windows'
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
           CC: ${{ matrix.cc }}
-        run: |
-          mkdir -p dist/${{ matrix.os }}-${{ matrix.arch }}
-          PLUGINS="workbuddy qoder trae zcode mimo"
-          for plugin in $PLUGINS; do
-            echo "=== Building $plugin ==="
-            cd plugins/$plugin
-            go mod download
-            VER="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-            VFLAG=""
-            [ -n "$VER" ] && VFLAG="-X main.version=$VER"
-            OUTPUT="../../dist/${{ matrix.os }}-${{ matrix.arch }}/${plugin}.${{ matrix.ext }}"
-            go build -buildmode=c-shared -trimpath -ldflags="-s -w $VFLAG" -o "$OUTPUT" .
-            if [ $? -eq 0 ]; then
-              echo "  ✅ $plugin built"
-            else
-              echo "  ❌ $plugin failed"
-              exit 1
-            fi
-            cd ../..
-          done
-        shell: bash
-
-      # Split-channel flavor (issue #29): the legacy per-variant plugins,
-      # built from the SAME source purely via ldflags injection —
-      #   -X main.providerName=<id>      → registered plugin id / auth-file
-      #                                    namespace / panel entry
-      #   -X main.pluginVariantPin=<pin> → default login_region/login_variant
-      # One zip per platform: cpa-multi-plugins-split-<os>-<arch>.zip.
-      - name: Build split-channel plugins (Windows)
+        run: bash scripts/build.sh '${{ matrix.os }}' '${{ matrix.arch }}'
+      - name: Build on Windows
         if: matrix.os == 'windows'
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
-          CC: gcc
-        run: |
-          mkdir -p dist-split/${{ matrix.os }}-${{ matrix.arch }}
-          SPLIT="codebuddy-cn:workbuddy:cn codebuddy-intl:workbuddy:intl qoder-cn:qoder:cn qoder-intl:qoder:intl trae-cn:trae:cn trae-solo-cn:trae:solo trae-intl:trae:intl"
-          for entry in $SPLIT; do
-            name="${entry%%:*}"; rest="${entry#*:}"; dir="${rest%%:*}"; pin="${rest##*:}"
-            echo "=== Building $name (from $dir, pin=$pin) ==="
-            cd plugins/$dir
-            go mod download
-            VER="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-            VFLAG=""
-            [ -n "$VER" ] && VFLAG="-X main.version=$VER"
-            OUTPUT="../../dist-split/${{ matrix.os }}-${{ matrix.arch }}/${name}.${{ matrix.ext }}"
-            go build -buildmode=c-shared -trimpath -ldflags="-s -w -X main.providerName=$name -X main.pluginVariantPin=$pin $VFLAG" -o "$OUTPUT" .
-            if [ $? -eq 0 ]; then
-              echo "  ✅ $name built"
-            else
-              echo "  ❌ $name failed"
-              exit 1
-            fi
-            cd ../..
-          done
         shell: msys2 {0}
-
-      - name: Build split-channel plugins (non-Windows)
-        if: matrix.os != 'windows'
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: 1
-          CC: ${{ matrix.cc }}
-        run: |
-          mkdir -p dist-split/${{ matrix.os }}-${{ matrix.arch }}
-          SPLIT="codebuddy-cn:workbuddy:cn codebuddy-intl:workbuddy:intl qoder-cn:qoder:cn qoder-intl:qoder:intl trae-cn:trae:cn trae-solo-cn:trae:solo trae-intl:trae:intl"
-          for entry in $SPLIT; do
-            name="${entry%%:*}"; rest="${entry#*:}"; dir="${rest%%:*}"; pin="${rest##*:}"
-            echo "=== Building $name (from $dir, pin=$pin) ==="
-            cd plugins/$dir
-            go mod download
-            VER="$(tr -d '[:space:]' < VERSION 2>/dev/null || true)"
-            VFLAG=""
-            [ -n "$VER" ] && VFLAG="-X main.version=$VER"
-            OUTPUT="../../dist-split/${{ matrix.os }}-${{ matrix.arch }}/${name}.${{ matrix.ext }}"
-            go build -buildmode=c-shared -trimpath -ldflags="-s -w -X main.providerName=$name -X main.pluginVariantPin=$pin $VFLAG" -o "$OUTPUT" .
-            if [ $? -eq 0 ]; then
-              echo "  ✅ $name built"
-            else
-              echo "  ❌ $name failed"
-              exit 1
-            fi
-            cd ../..
-          done
-        shell: bash
-
-      - name: Package artifacts (Windows)
-        if: matrix.os == 'windows'
-        shell: powershell
-        run: |
-          Get-ChildItem dist/${{ matrix.os }}-${{ matrix.arch }} -Filter *.dll | ForEach-Object { Write-Host "  $($_.Name)" }
-          Compress-Archive -Path "dist/${{ matrix.os }}-${{ matrix.arch }}/*.dll" -DestinationPath "cpa-multi-plugins-${{ matrix.os }}-${{ matrix.arch }}.zip" -Force
-          Get-ChildItem dist-split/${{ matrix.os }}-${{ matrix.arch }} -Filter *.dll | ForEach-Object { Write-Host "  split: $($_.Name)" }
-          Compress-Archive -Path "dist-split/${{ matrix.os }}-${{ matrix.arch }}/*.dll" -DestinationPath "cpa-multi-plugins-split-${{ matrix.os }}-${{ matrix.arch }}.zip" -Force
-          Write-Host "Created zips:"
-          Get-Item "cpa-multi-plugins*${{ matrix.os }}-${{ matrix.arch }}.zip" | Select-Object Name, Length
-
-      - name: Package artifacts (non-Windows)
-        if: matrix.os != 'windows'
-        run: |
-          cd dist/${{ matrix.os }}-${{ matrix.arch }}
-          rm -f *.h
-          zip -r ../../cpa-multi-plugins-${{ matrix.os }}-${{ matrix.arch }}.zip .
-          cd ../../dist-split/${{ matrix.os }}-${{ matrix.arch }}
-          rm -f *.h
-          zip -r ../../cpa-multi-plugins-split-${{ matrix.os }}-${{ matrix.arch }}.zip .
-          cd ../..
-          ls -lh cpa-multi-plugins*.zip
-        shell: bash
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          CC: gcc
+        run: bash scripts/build.sh windows amd64
+      - uses: actions/upload-artifact@v4
         with:
-          name: cpa-multi-plugins-${{ matrix.os }}-${{ matrix.arch }}
+          name: trae-${{ matrix.os }}-${{ matrix.arch }}
           path: |
-            cpa-multi-plugins-${{ matrix.os }}-${{ matrix.arch }}.zip
-            cpa-multi-plugins-split-${{ matrix.os }}-${{ matrix.arch }}.zip
-          retention-days: 30
-
-  # Issue #39: the registry lockstep guards and the plugin unit-test suites
-  # only ever ran on contributor machines before — a drifted registry.json or
-  # a red test suite could ride a green build straight into a release. This
-  # job runs both on every main push (badge) and every tag (release gate).
-  test:
-    name: Unit tests + registry guard
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      # Deterministic horizon for the cooldown / queue time tests; the suites
-      # are clock-anchored by design (see workbuddy 0.9.59 fix) and UTC makes
-      # the runners match the reference environment.
-      TZ: UTC
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.26'
-          cache: false
-
-      - name: Registry lockstep guards (tools/registry)
-        run: |
-          cd tools/registry
-          go test -count=1 ./...
-
-      - name: Plugin unit tests
-        run: |
-          # Aggregate failures across plugins: one red suite must not hide
-          # the next plugin's results (bash -e would abort at the first).
-          PLUGINS="workbuddy qoder trae zcode mimo"
-          FAILED=""
-          for plugin in $PLUGINS; do
-            echo "=== go test $plugin ==="
-            if ! (cd plugins/$plugin && go mod download && go test -count=1 ./...); then
-              FAILED="$FAILED $plugin"
-            fi
-          done
-          if [ -n "$FAILED" ]; then
-            echo "::error::test suites failed for:$FAILED"
-            exit 1
-          fi
-        shell: bash
-
+            dist/trae_*.zip
+            dist/trae_*.sha256
+          if-no-files-found: error
   release:
-    name: Create Release
-    needs: [build, test]
+    needs: [test, build]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # Deep-audit hardening: publish only when the build job itself succeeded.
-    # The optional darwin-amd64 cross leg keeps reporting success via
-    # continue-on-error, so a toolchain regression there still cannot block a
-    # release -- but a REQUIRED leg failing now skips the release instead of
-    # silently shipping an incomplete asset set.
-    # v0.12.76: tag-gated as well — main-branch CI runs (badge refresh) must
-    # build but NEVER publish. workflow_dispatch keeps its version input path.
-    # v0.8.72 (issue #39): tests gate the release too — a red suite or a
-    # drifted registry.json must never ship as a tagged build.
-    if: always() && !cancelled() && needs.build.result == 'success' && needs.test.result == 'success' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: write
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - name: Check tag matches provider version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: test "${RELEASE_TAG#v}" = "$(tr -d '[:space:]' < plugins/trae/VERSION)"
+      - uses: actions/download-artifact@v4
         with:
-          path: artifacts
-          merge-multiple: false
-
-      - name: Flatten artifacts
-        run: |
-          mkdir -p release
-          find artifacts -name "*.zip" -exec cp {} release/ \;
-          ls -lh release/
-
-      - name: Determine version
-        id: version
-        run: |
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "version=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          else
-            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          fi
-        shell: bash
-
-      # CPA plugin store assets (#39 field report, 2026-10-21): the
-      # CLIProxyAPI plugin store installs ONE plugin per release asset. Its
-      # client resolves the plugin's `repository` -> latest release ->
-      # asset named {plugin_id}_{release_version}_{goos}_{goarch}.zip plus a
-      # sibling checksums.txt (sha256sum format), and requires the zip to
-      # contain exactly ONE dynamic library at zip root. The aggregate
-      # bundles serve manual installs; these per-plugin zips serve the
-      # store's install/update path. Before this step the store 502'd with
-      # "plugin_install_failed: release asset qoder_0.8.72_windows_amd64.zip
-      # not found" because no such asset had ever existed.
-      - name: Package per-plugin store zips + checksums.txt
-        run: |
-          TAGVER="${{ steps.version.outputs.version }}"
-          TAGVER="${TAGVER#v}"
-          echo "store asset version: $TAGVER"
-          cd release
-          for agg in cpa-multi-plugins-*.zip; do
-            case "$agg" in *split*) continue ;; esac
-            plat="${agg#cpa-multi-plugins-}"        # e.g. linux-amd64.zip
-            plat="${plat%.zip}"                     # → linux-amd64 (dry-run caught the .zip leak)
-            goos="${plat%-*}"; goarch="${plat##*-}"
-            tmp="$(mktemp -d)"
-            unzip -q -o "$agg" -d "$tmp"
-            for lib in "$tmp"/*.so "$tmp"/*.dll "$tmp"/*.dylib; do
-              [ -f "$lib" ] || continue
-              id="$(basename "$lib")"; id="${id%.*}"
-              zip -q -j "${id}_${TAGVER}_${goos}_${goarch}.zip" "$lib"
-            done
-            rm -rf "$tmp"
-          done
-          rm -f checksums.txt
-          sha256sum *.zip > checksums.txt
-          echo "=== store assets ==="
-          cat checksums.txt
-        shell: bash
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+          path: release
+          merge-multiple: true
+      - name: Generate archive checksums
+        run: python3 -c "from pathlib import Path; import hashlib; p=Path('release'); (p/'checksums.txt').write_text(''.join(hashlib.sha256(f.read_bytes()).hexdigest()+'  '+f.name+'\n' for f in sorted(p.glob('*.zip'))))"
+      - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.version }}
-          name: cpa-multi-plugins ${{ steps.version.outputs.version }}
-          body: |
-            # cpa-multi-plugins ${{ steps.version.outputs.version }}
-
-            5 unified CPA plugins: **CodeBuddy/WorkBuddy**, **Qoder**, **Trae**, **ZCode (GLM coding plan)**, **MiMo** — the first three merge the former CN/Intl/solo variants with automatic legacy auth-file adoption.
-
-            ## Downloads
-
-            ### Unified package (default, recommended)
-            - `cpa-multi-plugins-linux-amd64.zip` — Linux x86_64
-            - `cpa-multi-plugins-linux-arm64.zip` — Linux ARM64
-            - `cpa-multi-plugins-darwin-arm64.zip` — macOS Apple Silicon
-            - `cpa-multi-plugins-darwin-amd64.zip` — macOS Intel (cross-built on an arm64 runner)
-            - `cpa-multi-plugins-windows-amd64.zip` — Windows x86_64
-
-            ### CPA Plugin Store (v0.8.74+)
-            Each release also carries per-plugin store zips named `{plugin_id}_{version}_{goos}_{goarch}.zip` (one dynamic library at zip root) plus a `checksums.txt` — exactly what the CLIProxyAPI plugin store's install/update path resolves. Add this repo's registry as a store source and install/update per plugin from the management panel:
-
-            ```yaml
-            plugins:
-              enabled: true
-              store-sources:
-                - "https://raw.githubusercontent.com/mmqz/cpa-multi-plugins/main/registry.json"
-            ```
-
-            ### Split-channel package (issue #29)
-            Same platform list with a `cpa-multi-plugins-split-<os>-<arch>.zip` each. Contains the legacy **per-variant plugins** — `codebuddy-cn`, `codebuddy-intl`, `qoder-cn`, `qoder-intl`, `trae-cn`, `trae-solo-cn`, `trae-intl` — each with its own panel entry and its own OAuth login pinned to its realm. Install INSTEAD of (not next to) the unified plugin of the same provider; enable them in config.yaml by their own ids (`plugins.configs.codebuddy-intl.enabled: true`, …).
-
-            ## Installation (verified against real CLIProxyAPI host)
-            1. Download and unzip the archive for your platform.
-            2. Copy the `.so`/`.dylib`/`.dll` files to your CPA plugins directory (e.g. `plugins/linux/amd64/`).
-            3. **Each plugin must be explicitly enabled** in `config.yaml` (per-plugin default is disabled):
-               ```yaml
-               plugins:
-                 enabled: true
-                 dir: "plugins"
-                 configs:
-                   workbuddy: { enabled: true }
-                   qoder: { enabled: true }
-                   trae: { enabled: true }
-                   zcode: { enabled: true }
-                   mimo: { enabled: true }
-               ```
-            4. Restart CPA and check logs for `pluginhost: plugin registered plugin_id=workbuddy/qoder/trae/zcode/mimo`.
-            5. Login accounts via the management panel or Management API. Legacy `codebuddy-cn-/codebuddy-intl-/qoder-cn-/qoder-intl-/trae-cn-/trae-solo-cn-/trae-intl-` auth files are adopted automatically; zcode adopts a legacy single-file `zcode.json`; mimo adopts the desktop's SSO session automatically (Chromium partition cookie jar → service-ticket re-mint).
-
-            ## Plugins
-            | Plugin | Covers | Realms | Login options |
-            |---|---|---|---|
-            | workbuddy | CodeBuddy + WorkBuddy + codebuddy-cn + codebuddy-intl | CN (copilot.tencent.com) / Global (workbuddy.ai) / Intl (codebuddy.ai) | CLI + IDE, per-account region |
-            | qoder | Qoder + qoder-cn + qoder-intl | CN (qoder.com.cn) / Intl (qoder.com) | Device flow + PAT, per-account region |
-            | trae | Trae CN + Trae SOLO CN + Trae Intl | CN (api.trae.cn) / SOLO / Intl (marscode) | Per-variant device flow |
-            | zcode | GLM coding plan (ZCode desktop parity) | Intl (api.z.ai) / CN (open.bigmodel.cn) | OAuth CLI poll flow + legacy zcode.json adoption, per-account provider |
-            | mimo | Xiaomi MiMo (mimocode CLI + desktop parity) | CN / SGP / RU / IN (mimo-server-<region>.xiaomimimo.com) | sk OAuth (permanent) + desktop SSO cookie adoption, per-account region |
-
-            See [README](https://github.com/mmqz/cpa-multi-plugins#readme) for details.
+          name: trae-cpa-plugin ${{ github.ref_name }}
+          generate_release_notes: true
           files: |
-            release/*.zip
+            release/trae_*.zip
             release/checksums.txt
-          draft: false
-          prerelease: false

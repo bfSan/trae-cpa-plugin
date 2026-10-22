@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 // checkinCacheEntry pins the v0.12.61 funds-snapshot rule: a claim that
@@ -32,8 +32,8 @@ func TestCheckinCacheEntryClaimAcceptedInvalidatesFundsSnapshot(t *testing.T) {
 	if e.checkin == nil || !e.checkin.CheckedIn || e.checkin.Credits != 150 {
 		t.Fatalf("checkin card must refresh from the new status, got %+v", e.checkin)
 	}
-	if !e.fetched.After(prev.fetched) {
-		t.Fatal("entry timestamp must advance")
+	if e.fetched != prev.fetched {
+		t.Fatal("check-in must not advance independent usage timestamp")
 	}
 }
 

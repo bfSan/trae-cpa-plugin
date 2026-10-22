@@ -23,6 +23,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/netroute"
 )
 
 const (
@@ -117,14 +119,8 @@ type Client struct {
 
 // New creates a default client.
 func New() *Client {
-	tr := &http.Transport{
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   20,
-		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: StreamTimeout,
-	}
 	return &Client{
-		HTTP:      &http.Client{Timeout: StreamTimeout, Transport: tr},
+		HTTP:      netroute.NewClient(StreamTimeout, false),
 		BaseURL:   DefaultBase,
 		OAuthHost: "https://api.marscode.com",
 		ClientID:  "ono9krqynydwx5",
@@ -277,7 +273,7 @@ func (c *Client) CreateSession(a *Auth, model string, messages []map[string]any)
 		return "", "", err
 	}
 	req.Header = buildHeaders(a)
-	resp, err := c.HTTP.Do(req)
+	resp, err := netroute.Do(c.HTTP, req)
 	if err != nil {
 		return "", "", err
 	}
@@ -312,7 +308,10 @@ func (c *Client) StreamEvents(ctx context.Context, a *Auth, sessionID, messageID
 		return err
 	}
 	req.Header = buildHeaders(a)
-	resp, err := c.HTTP.Do(req)
+	// Stream lifetime follows the caller; keep the injectable transport.
+	streamClient := *c.HTTP
+	streamClient.Timeout = 0
+	resp, err := netroute.Do(&streamClient, req)
 	if err != nil {
 		return err
 	}
@@ -593,16 +592,22 @@ func (c *Client) RefreshToken(a *Auth) error {
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", "Trae/3.5.66")
-		resp, err := c.HTTP.Do(req)
+		resp, err := netroute.Do(c.HTTP, req)
 		if err != nil {
-			lastErr = err
-			continue
+			return err
 		}
-		respBody, _ = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		var readErr error
+		respBody, readErr = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		if resp.StatusCode >= 400 {
-			lastErr = fmt.Errorf("refresh upstream %d: %s", resp.StatusCode, truncate(string(respBody), 200))
-			continue
+		if readErr != nil {
+			return netroute.SafeError(context.Background(), readErr)
+		}
+		if resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("refresh upstream rejected request (HTTP %d)", resp.StatusCode)
+			if resp.StatusCode == 404 || resp.StatusCode == 405 {
+				continue
+			}
+			return lastErr
 		}
 		lastErr = nil
 		break
@@ -656,7 +661,7 @@ func (c *Client) GetUserInfo(a *Auth) (uid, nickname, enterpriseID string, err e
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", "Trae/3.5.66")
 		req.Header.Set("X-Cloudide-Token", a.AccessToken)
-		resp, rerr := c.HTTP.Do(req)
+		resp, rerr := netroute.Do(c.HTTP, req)
 		if rerr != nil {
 			lastErr = rerr
 			continue
@@ -701,7 +706,7 @@ func (c *Client) FetchModels(a *Auth) ([]string, error) {
 		return nil, err
 	}
 	req.Header = buildHeaders(a)
-	resp, err := c.HTTP.Do(req)
+	resp, err := netroute.Do(c.HTTP, req)
 	if err != nil {
 		return nil, err
 	}
@@ -748,7 +753,7 @@ func nonEmpty(s, fallback string) string {
 }
 
 func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
+	s = netroute.Redact(strings.TrimSpace(s))
 	if len(s) > n {
 		return s[:n]
 	}

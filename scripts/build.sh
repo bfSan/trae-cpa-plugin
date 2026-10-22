@@ -1,83 +1,21 @@
-#!/bin/bash
-# build.sh - 编译所有 CPA 插件
-# 用法: ./scripts/build.sh [linux|darwin|windows] [amd64|arm64]
-# 默认: 当前平台
-
-set -e
-
-TARGET_OS=${1:-$(go env GOOS)}
-TARGET_ARCH=${2:-$(go env GOARCH)}
+#!/usr/bin/env bash
+# Build only this fork's Trae provider. A target C compiler is required for cross builds.
+set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PLUGINS_DIR="$ROOT_DIR/plugins"
-
-echo "=== cpa-multi-plugins build ==="
-echo "Target: $TARGET_OS/$TARGET_ARCH"
-echo "Plugins dir: $PLUGINS_DIR"
-echo ""
-
-# 插件清单（v0.12.0 收敛为 3 个统一插件）
-PLUGINS=(
-  "workbuddy"
-  "qoder"
-  "trae"
-)
-
-# 输出目录
+TARGET_OS="${1:-$(go env GOOS)}"
+TARGET_ARCH="${2:-$(go env GOARCH)}"
+case "$TARGET_OS" in linux) EXT=so ;; darwin) EXT=dylib ;; windows) EXT=dll ;; *) echo "Unsupported target OS" >&2; exit 2 ;; esac
+case "$TARGET_ARCH" in amd64|arm64) ;; *) echo "Unsupported target architecture" >&2; exit 2 ;; esac
 OUT_DIR="$ROOT_DIR/dist/$TARGET_OS-$TARGET_ARCH"
 mkdir -p "$OUT_DIR"
-
-# 平台后缀
-EXT="so"
-if [ "$TARGET_OS" = "darwin" ]; then
-  EXT="dylib"
-elif [ "$TARGET_OS" = "windows" ]; then
-  EXT="dll"
+VERSION="$(tr -d '[:space:]' < "$ROOT_DIR/plugins/trae/VERSION")"
+[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid VERSION" >&2; exit 2; }
+export CGO_ENABLED=1 GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH"
+# Respect an explicitly supplied cross compiler; never silently overwrite CC.
+if [[ -z "${CC:-}" ]]; then
+ case "$TARGET_OS" in darwin) export CC=clang ;; windows) export CC=x86_64-w64-mingw32-gcc ;; *) export CC=gcc ;; esac
 fi
-
-# 设置 cross-compile 环境
-export CGO_ENABLED=1
-export GOOS=$TARGET_OS
-export GOARCH=$TARGET_ARCH
-
-# 跨平台编译需要对应 C 编译器
-CC="gcc"
-if [ "$TARGET_OS" = "darwin" ]; then
-  CC="${CC:-clang}"
-elif [ "$TARGET_OS" = "windows" ]; then
-  CC="${CC:-x86_64-w64-mingw32-gcc}"
-fi
-export CC
-
-SUCCESS=0
-FAILED=0
-FAILED_LIST=()
-
-for plugin in "${PLUGINS[@]}"; do
-  echo "--- Building $plugin ---"
-  cd "$PLUGINS_DIR/$plugin"
-  OUT_FILE="$OUT_DIR/${plugin}.${EXT}"
-  if CGO_ENABLED=1 go build -buildmode=c-shared -trimpath -ldflags="-s -w" -o "$OUT_FILE" . 2>&1 | tail -5; then
-    if [ -f "$OUT_FILE" ]; then
-      SIZE=$(du -h "$OUT_FILE" | cut -f1)
-      echo "  ✅ $plugin → $OUT_FILE ($SIZE)"
-      SUCCESS=$((SUCCESS+1))
-    else
-      echo "  ❌ $plugin: build succeeded but no output file"
-      FAILED=$((FAILED+1))
-      FAILED_LIST+=("$plugin")
-    fi
-  else
-    echo "  ❌ $plugin: build failed"
-    FAILED=$((FAILED+1))
-    FAILED_LIST+=("$plugin")
-  fi
-  echo ""
-done
-
-echo "=== Summary ==="
-echo "Success: $SUCCESS / ${#PLUGINS[@]}"
-if [ $FAILED -gt 0 ]; then
-  echo "Failed: $FAILED (${FAILED_LIST[*]})"
-  exit 1
-fi
-echo "All plugins built. Output in: $OUT_DIR"
+(cd "$ROOT_DIR/plugins/trae" && go build -buildmode=c-shared -trimpath -ldflags="-s -w -X main.version=$VERSION" -o "$OUT_DIR/trae.$EXT" .)
+printf 'Built trae-cpa-plugin %s: %s/trae.%s\n' "$VERSION" "$OUT_DIR" "$EXT"
+# Store asset: exactly one library at archive root, matching CPA's resolver.
+python3 "$ROOT_DIR/scripts/package.py" "$VERSION" "$TARGET_OS" "$TARGET_ARCH"

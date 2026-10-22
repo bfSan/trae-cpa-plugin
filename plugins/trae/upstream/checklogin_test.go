@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 // TestPlatformIDForMatrix locks the v0.12.44 2×2 lineage matrix against

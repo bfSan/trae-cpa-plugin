@@ -63,7 +63,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 )
 
 // epExchangeBound is the clients' own renewal path, which binds the JWT to
@@ -203,6 +203,12 @@ func isTokenDeviceNotMatch(err error) bool {
 // 谱系感知（own-lineage rung 优先）+ 20403 短路。Every failure path leaves
 // a untouched (the refreshLocked atomicity contract). Caller must hold a's
 // write lock.
+type ambiguousRefreshError struct{}
+
+func (*ambiguousRefreshError) Error() string {
+	return "token refresh outcome is uncertain; automatic cross-endpoint retry blocked"
+}
+
 func (c *Client) boundExchangeLocked(a *auth.Auth) error {
 	if strings.TrimSpace(a.RefreshToken) == "" {
 		return fmt.Errorf("no refreshToken")
@@ -249,6 +255,11 @@ func (c *Client) boundExchangeLocked(a *auth.Auth) error {
 		data, err := c.doJSON(req)
 		cancel()
 		if err != nil {
+			// Preserve explicit protocol refusals, never replay an uncertain rotation.
+			ue, ok := err.(*Error)
+			if !ok || ue.Status < 400 || ue.Status >= 500 || ue.Status == 408 || ue.Status == 429 {
+				return &ambiguousRefreshError{}
+			}
 			lastErr = err
 			// v0.12.75: 20403 短路。两个 rung 呈同一 DeviceInfo、同一密钥
 			// 签名——第一个 rung 20403 后第二个 rung 必然也败（2026-10-12
@@ -262,8 +273,7 @@ func (c *Client) boundExchangeLocked(a *auth.Auth) error {
 		}
 		token, refreshToken, expiresAt, ok := parseBoundExchange(data)
 		if !ok {
-			lastErr = fmt.Errorf("bound exchange: no token in response")
-			continue
+			return &ambiguousRefreshError{}
 		}
 		a.AccessToken = token
 		if refreshToken != "" {

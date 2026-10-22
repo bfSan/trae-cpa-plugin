@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 const soloQuotaSSE = "event: error\ndata: {\"code\":1005,\"message\":\"plan limit\"}\n\n"

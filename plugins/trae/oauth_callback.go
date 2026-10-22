@@ -23,8 +23,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +33,7 @@ import (
 // auth.login.start request. pluginapi types have no json tags, so the wire
 // format uses capitalized Go field names.
 type loginHostContext struct {
+	Owner   string
 	BaseURL string
 	AuthDir string
 }
@@ -48,13 +47,17 @@ func parseLoginHostContext(request []byte) loginHostContext {
 		return out
 	}
 	var req struct {
-		BaseURL string `json:"BaseURL"`
-		Host    struct {
+		LoginOwner string
+		BaseURL    string `json:"BaseURL"`
+		Host       struct {
 			AuthDir string `json:"AuthDir"`
 		} `json:"Host"`
 	}
 	if err := json.Unmarshal(request, &req); err != nil {
 		return out
+	}
+	if req.LoginOwner == "self" {
+		out.Owner = "self"
 	}
 	out.BaseURL = strings.TrimSpace(req.BaseURL)
 	out.AuthDir = strings.TrimSpace(req.Host.AuthDir)
@@ -123,24 +126,10 @@ func intlCompleteLogin(lc *intlloginCtx) {
 // has not been delivered yet). The file is removed after reading so it is
 // consumed exactly once.
 func readHostCallbackFile(authDir, state string) (code, cbErr string, ok bool) {
-	if authDir == "" || state == "" {
+	if authDir == "" || !validOAuthState(state) {
 		return "", "", false
 	}
-	path := filepath.Join(authDir, fmt.Sprintf(".oauth-%s-%s.oauth", providerName, state))
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", "", false
-	}
-	_ = os.Remove(path)
-	var payload struct {
-		Code  string `json:"code"`
-		State string `json:"state"`
-		Error string `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		return "", "", true
-	}
-	return strings.TrimSpace(payload.Code), strings.TrimSpace(payload.Error), true
+	return readSafeHostCallback(authDir, fmt.Sprintf(".oauth-%s-%s.oauth", providerName, state), state)
 }
 
 // callbackParams is the parsed upstream callback query.
@@ -164,9 +153,20 @@ type callbackParams struct {
 // precedence for the resource callback route.
 func parseCallbackParams(vals url.Values) callbackParams {
 	var p callbackParams
+	size := 0
+	for k, values := range vals {
+		size += len(k)
+		for _, v := range values {
+			size += len(v)
+		}
+	}
+	if size > 64<<10 {
+		p.err = fmt.Errorf("oauth callback too large")
+		return p
+	}
 	for _, k := range []string{"error", "error_code", "err", "errorCode"} {
 		if ev := vals.Get(k); ev != "" {
-			p.err = fmt.Errorf("oauth callback error: %s=%s", k, ev)
+			p.err = fmt.Errorf("oauth callback rejected")
 			return p
 		}
 	}
@@ -244,24 +244,50 @@ func resolveCallbackState(vals url.Values) string {
 // login (cn/solo or intl) is in flight, and "" otherwise. Expired states
 // don't count — they can no longer complete.
 func singleInflightLoginState() string {
-	var live []string
+	live := make(map[string]bool)
 	now := time.Now()
 	loginStates.Range(func(k, v any) bool {
 		lc := v.(*loginCtx)
-		if now.Before(lc.expires) {
-			live = append(live, k.(string))
+		lc.mu.Lock()
+		if now.Before(lc.expires) && !lc.ExchangeStarted && lc.authCode == "" && lc.refreshToken == "" {
+			live[k.(string)] = true
 		}
+		lc.mu.Unlock()
 		return true
 	})
 	intlloginStates.Range(func(k, v any) bool {
 		lc := v.(*intlloginCtx)
-		if now.Before(lc.expires) {
-			live = append(live, k.(string))
+		lc.mu.Lock()
+		if now.Before(lc.expires) && !lc.ExchangeStarted && lc.authCode == "" {
+			live[k.(string)] = true
 		}
+		lc.mu.Unlock()
 		return true
 	})
+	// Include unrestored disk logins: one memory state must not accidentally
+	// consume an anonymous callback that could belong to a different disk state.
+	dir := cachedAuthDir()
+	if dir != "" {
+		pendingStores.Lock()
+		store, err := pendingStore(dir)
+		if err == nil {
+			records, e := store.records()
+			if e != nil {
+				pendingStores.Unlock()
+				return ""
+			}
+			for _, r := range records {
+				if r.AuthCode == "" && r.RefreshToken == "" && (r.Progress == nil || !r.Progress.ExchangeStarted) {
+					live[r.State] = true
+				}
+			}
+		}
+		pendingStores.Unlock()
+	}
 	if len(live) == 1 {
-		return live[0]
+		for state := range live {
+			return state
+		}
 	}
 	return ""
 }
@@ -297,85 +323,29 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 	if state == "" {
 		return callbackResultHTML("Login failed", "missing state parameter — 回调链接缺少状态参数，请回到面板重新点「登录」，完成授权后立即粘贴新链接 (please restart the login)")
 	}
-	// CN/SOLO flow.
 	if v, ok := loginStates.Load(state); ok {
 		lc := v.(*loginCtx)
-		p := parseCallbackParams(vals)
-		if p.loginHost != "" {
-			lc.loginHost = p.loginHost
-		} // else keep the start-login host (cockpit-tools fallback_login_host)
-		if p.userTag != "" {
-			lc.userTag = p.userTag
+		msg, accepted := acceptLoginCallbackCN(lc, vals)
+		if msg != "" {
+			return callbackResultHTML("Login failed", msg)
 		}
-		// v0.12.25: carry the callback's account identity echo into the
-		// save paths (last-writer wins per field, GetUserInfo still wins).
-		if p.identity.UID != "" {
-			lc.cbUID = p.identity.UID
-			// v0.12.77: the callback revealed WHO is logging in —
-			// switch the login onto that account's derived device
-			// identity before any exchange point runs.
-			applyDerivedIdentityCN(lc, p.identity.UID)
+		if !accepted {
+			return callbackResultHTML("Waiting for authorization", "No authorization code received.")
 		}
-		if p.identity.Nickname != "" {
-			lc.cbNickname = p.identity.Nickname
-		}
-		lc.refreshToken = p.refreshToken
-		lc.authCode = p.authCode
-		lc.err = p.err
-		if p.err == nil && p.authCode == "" && p.refreshToken == "" {
-			lc.err = fmt.Errorf("oauth callback: no authCode/refreshToken in callback params — 回调链接中没有授权码参数，请从浏览器地址栏完整复制（含 ? 后所有参数），不要复制被截断的链接")
-		}
-		completeLogin(lc)
-		if lc.err != nil {
-			if lc.restored {
-				// Host poll channel is dead for a restored
-				// login — settle the outcome here so a re-paste
-				// explains what happened.
-				recordLoginOutcome(state, false, lc.err.Error())
-				clearPendingLogin(lc.authDir)
-				loginStates.Delete(state)
-			}
-			return callbackResultHTML("Login failed", lc.err.Error())
-		}
-		spawnSelfCompleteCN(lc) // v0.12.23: restored → immediate; live → self-complete after the grace window
-		return callbackResultHTML("Login successful", "You can close this window now.")
+		spawnSelfCompleteCN(lc)
+		return callbackResultHTML("Login successful", "Callback received; credentials are being prepared. Check login status for save confirmation.")
 	}
-	// Intl flow.
 	if v, ok := intlloginStates.Load(state); ok {
 		lc := v.(*intlloginCtx)
-		p := parseCallbackParams(vals)
-		if p.loginHost != "" {
-			lc.loginHost = p.loginHost
-		} // else keep the start-login host
-		if p.userTag != "" {
-			lc.userTag = p.userTag
+		msg, accepted := acceptLoginCallbackIntl(lc, vals)
+		if msg != "" {
+			return callbackResultHTML("Login failed", msg)
 		}
-		// v0.12.25: intl parity — userInfo echo into the save path.
-		if p.identity.UID != "" {
-			lc.cbUID = p.identity.UID
-			// v0.12.77: per-account derived device identity (intl
-			// counterpart of the CN branch above).
-			applyDerivedIdentityIntl(lc, p.identity.UID)
+		if !accepted {
+			return callbackResultHTML("Waiting for authorization", "No authorization code received.")
 		}
-		if p.identity.Nickname != "" {
-			lc.cbNickname = p.identity.Nickname
-		}
-		lc.authCode = p.authCode
-		lc.err = p.err
-		if p.err == nil && p.authCode == "" {
-			lc.err = fmt.Errorf("oauth callback: no authCode in callback params — 回调链接中没有授权码参数，请复制浏览器地址栏完整链接（含 ? 后所有参数）")
-		}
-		intlCompleteLogin(lc)
-		if lc.err != nil {
-			if lc.restored {
-				recordLoginOutcome(state, false, lc.err.Error())
-				clearPendingLogin(lc.authDir)
-				intlloginStates.Delete(state)
-			}
-			return callbackResultHTML("Login failed", lc.err.Error())
-		}
-		spawnSelfCompleteIntl(lc) // v0.12.23: restored → immediate; live → self-complete after the grace window
-		return callbackResultHTML("Login successful", "You can close this window now.")
+		spawnSelfCompleteIntl(lc)
+		return callbackResultHTML("Login successful", "Callback received; credentials are being prepared. Check login status for save confirmation.")
 	}
 	// v0.12.17: the login already finished (panel poll drained the state, or
 	// the auto-callback completed it before the user pasted). Answer from the

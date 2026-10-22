@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 )
 
 // convertSOLOStreamToOpenAI reads SOLO SSE from r and emits OpenAI SSE chunks

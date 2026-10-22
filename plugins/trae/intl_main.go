@@ -77,8 +77,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/intlupstream"
-	cnupstream "github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/intlupstream"
+	cnupstream "github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -223,7 +223,7 @@ func intlbuildRegistration() intlregistrationPayload {
 // -----------------------------------------------------------------------------
 
 func intlhandleModelStatic(_ []byte) ([]byte, error) {
-	return okEnvelope(pluginapi.ModelResponse{Provider: intlproviderName, Models: intlstaticModels()})
+	return okEnvelope(pluginapi.ModelResponse{Provider: intlproviderName, Models: []pluginapi.ModelInfo{}})
 }
 
 func intlhandleModelForAuth(request []byte) ([]byte, error) {
@@ -242,8 +242,8 @@ func intlhandleModelForAuth(request []byte) ([]byte, error) {
 	}
 	a, err := intlparseStoredAuth(req.StorageJSON)
 	if err != nil {
-		log.Printf("intl model.for_auth: parse storage failed (%v) — static fallback", err)
-		return okEnvelope(pluginapi.ModelResponse{Provider: intlproviderName, Models: filterExcludedModels(intlstaticModels(), req.Host, providerName+"-intl")})
+		log.Printf("intl model.for_auth: parse storage failed (%v) — no account catalog", err)
+		return okEnvelope(pluginapi.ModelResponse{Provider: intlproviderName, Models: []pluginapi.ModelInfo{}})
 	}
 	out := intlmodelCatalogForAuth(req.StorageJSON, req.AuthID, a)
 	// v0.12.62: the intl namespace honors the provider key plus the
@@ -259,26 +259,24 @@ func intlhandleModelForAuth(request []byte) ([]byte, error) {
 // the panel picker and restart-outage recovery serve real data. Exposed for
 // the picker's ?refresh=1 path, which drives the exact same chain.
 func intlmodelCatalogForAuth(storageJSON []byte, authID string, a *upstream.Auth) []pluginapi.ModelInfo {
-	// v0.12.53: refresh before discovery. The executor path refreshes within
-	// 24h of expiry, but model discovery ran on the raw stored token — an
-	// account left idle past token expiry kept 401-ing discovery forever
-	// (static fallback every time = "国际模型拉取失效") even though a chat
-	// request would have healed the token. Refresh + persist here so
-	// discovery self-heals without needing a chat first.
-	if refreshed, rerr := intlupstreamClient.RefreshTokenIfNeeded(a, 24*time.Hour); rerr != nil {
-		// Non-fatal: the stored token may still be valid (e.g. refresh
-		// endpoint flapping) — try discovery with what we have.
-		log.Printf("model.for_auth %s: refresh failed (continuing with stored token): %v", a.UID, rerr)
-	} else if refreshed {
-		intlpersistRefreshedAuthTo(authID, a)
+	// Maintenance refreshes under the shared fresh physical-document boundary,
+	// releasing its lock before model discovery and snapshot persistence.
+	refreshed, refreshErr := refreshIntlExecutorAuth(pluginapi.ExecutorRequest{AuthID: authID, StorageJSON: storageJSON}, a)
+	if refreshErr != nil {
+		if snap, ok := persistedSnapshotForStorage(storageJSON, variantIntl); ok {
+			return applyModelOrder(snap)
+		}
+		return []pluginapi.ModelInfo{}
 	}
+	a = refreshed
+	storageJSON = modelStorageWithAccessToken(storageJSON, a.AccessToken)
 	dynamic, err := intlupstreamClient.FetchModels(a)
 	if err != nil {
-		log.Printf("model.for_auth %s: %v — persisted snapshot / static fallback", a.UID, err)
+		log.Printf("model.for_auth %s: %v — own persisted snapshot / empty catalog", a.UID, err)
 		if snap, ok := persistedSnapshotForStorage(storageJSON, variantIntl); ok {
-			return snap
+			return applyModelOrder(snap)
 		}
-		return intlstaticModels()
+		return []pluginapi.ModelInfo{}
 	}
 	// Namespace every dynamic ID with -intl (v0.12.2) and skip auto/work so
 	// the virtual models below are not duplicated.
@@ -304,7 +302,7 @@ func intlmodelCatalogForAuth(storageJSON []byte, authID string, a *upstream.Auth
 	// (advertised ids, pre exclusion — exclusion re-applies on every serve
 	// branch). Change-guarded inside; best-effort.
 	persistModelSnapshot(storageJSON, variantIntl, out)
-	return out
+	return applyModelOrder(out)
 }
 
 func intlstaticModels() []pluginapi.ModelInfo {
@@ -565,19 +563,8 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 		HideSaasLogin: false, // Intl non-SOLO does not hide SaaS login
 	})
 
-	// Supersede any previous pending intl login (single pending-login slot,
-	// mirrors cockpit-tools): close the old callback listener so retries
-	// never accumulate listeners for the login TTL.
-	intlloginStates.Range(func(key, value any) bool {
-		if prev, ok := value.(*intlloginCtx); ok {
-			closeListener(prev.listener)
-		}
-		intlloginStates.Delete(key)
-		return true
-	})
-
 	// Step 6: Store login state.
-	intlloginStates.Store(loginTraceID, &intlloginCtx{
+	lc := &intlloginCtx{
 		listener:      ln,
 		authDir:       host.AuthDir,
 		state:         loginTraceID,
@@ -592,27 +579,17 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 		// 交换点复用并随凭证落盘。
 		devicePublicKey:  ident.DevicePublicKey,
 		devicePrivateKey: ident.DevicePrivateKey,
-	})
+	}
 
 	// v0.12.17: disk-persisted pending login — the paste box keeps working
 	// across host restarts / docker bounce (same contract as the cn flow).
-	persistPendingLogin(pendingLoginRecord{
-		Flow:          "intl",
-		State:         loginTraceID,
-		LoginHost:     loginHost,
-		CbURL:         cbURL,
-		CodeVerifier:  codeVerifier,
-		CodeChallenge: codeChallenge,
-		DeviceID:      deviceID,
-		MachineID:     machineID,
-		// v0.12.76: 稳定设备身份的密钥对随 pending 记录落盘，进程重启
-		// 后的 self-complete 仍复用同一对（不再现铸）。
-		DevicePublicKey:  ident.DevicePublicKey,
-		DevicePrivateKey: ident.DevicePrivateKey,
-		AuthDir:          host.AuthDir,
-		CreatedAt:        time.Now().Unix(),
-		ExpiresAt:        time.Now().Add(loginTTL).Unix(),
-	})
+	lc.loginHost = loginHost
+	lc.Owner = host.Owner
+	lc.CreatedAt = time.Now().Unix()
+	if err := registerLoginIntl(lc); err != nil {
+		closeListener(ln)
+		return nil, err
+	}
 
 	if ln != nil {
 		go intlacceptCallback(loginTraceID)
@@ -623,296 +600,15 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 		URL:       verificationURI,
 		State:     loginTraceID,
 		ExpiresAt: time.Now().Add(loginTTL).UTC(),
-		Metadata:  map[string]any{"logo": pluginLogoURL, "callback_url": cbURL, "fallback_callback_path": resourceCallbackPath, "fallback_submit_path": resourceSubmitPath},
+		Metadata:  map[string]any{"stage": "pending", "persistent": host.AuthDir != "", "retryable": true, "logo": pluginLogoURL, "callback_url": cbURL, "fallback_callback_path": resourceCallbackPath, "fallback_submit_path": resourceSubmitPath},
 	})
 }
 
 func intlhandlePollLogin(request []byte) ([]byte, error) {
-	captureAuthDir(request) // v0.12.17: keep the restore-path AuthDir warm
-	var req pluginapi.AuthLoginPollRequest
-	if err := json.Unmarshal(request, &req); err != nil {
-		return nil, err
-	}
-	state := strings.TrimSpace(req.State)
-	if state == "" {
-		return nil, fmt.Errorf("poll: empty state")
-	}
-	v, ok := intlloginStates.Load(state)
-	if !ok {
-		// v0.12.17: process bounced since start-login — re-materialize the
-		// disk-persisted pending login so the paste still completes.
-		if s := restorePendingLoginState(state); s != "" {
-			v, ok = intlloginStates.Load(s)
-		}
-	}
-	if !ok {
-		return nil, fmt.Errorf("poll: unknown state — please restart login")
-	}
-	lc := v.(*intlloginCtx)
-	if time.Now().After(lc.expires) {
-		recordLoginOutcome(state, false, "login expired (15 min timeout)")
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		closeListener(lc.listener)
-		return nil, fmt.Errorf("poll: login expired (15 min timeout) — please re-initiate")
-	}
-	select {
-	case <-lc.done:
-	default:
-		if lc.listener == nil {
-			// Resource-callback flow: pick up the host oauth-callback
-			// file if the redirect landed there instead of our route.
-			if code, cbErr, ok := readHostCallbackFile(lc.authDir, state); ok {
-				if cbErr != "" {
-					lc.err = fmt.Errorf("oauth callback error: %s", cbErr)
-				} else if code != "" {
-					lc.authCode = code
-				}
-				intlCompleteLogin(lc)
-			}
-		}
-		select {
-		case <-lc.done:
-		default:
-			return okEnvelope(pluginapi.AuthLoginPollResponse{
-				Status:  pluginapi.AuthLoginStatusPending,
-				Message: "waiting for browser login",
-			})
-		}
-	}
-	if lc.err != nil {
-		recordLoginOutcome(state, false, lc.err.Error())
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		closeListener(lc.listener)
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusError,
-			Message: lc.err.Error(),
-		})
-	}
-	if lc.authCode == "" {
-		recordLoginOutcome(state, false, "login completed but no authCode received")
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		closeListener(lc.listener)
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusError,
-			Message: "login completed but no authCode received — please retry",
-		})
-	}
-	// Exchange authCode for tokens via the official account-API origins
-	// (cockpit-tools candidate_account_api_origins, v0.12.24): the official
-	// client exchanges ONLY against grow-* origins (SG default; USTTP via
-	// the callback userTag) — the callback loginHost (api-sg-central.trae.ai
-	// etc.) is a business-API host and answers an auth code with HTTP 401
-	// business code 20405 (live-verified 2026-09-04). DeviceInfo mirrors
-	// build_official_device_info, reuses the SAME machine/device ids
-	// embedded in the login URL, and carries a fresh per-login EC P-256
-	// DevicePublicKey (an empty value 401s the same way — the official
-	// client uploads a bound public key on first exchange).
-	// v0.12.76: the pair now comes from the stable login identity
-	// (carried from start-login / restored from the pending record)
-	// instead of a fresh mint per exchange.
-	pubKeyPEM, privKeyPEM, keyErr := deviceKeysForLogin(lc.devicePublicKey, lc.devicePrivateKey, lc.authDir, variantIntl)
-	if keyErr != nil {
-		// An exchange without the key pair would fail with 20405 anyway;
-		// fail here with the precise cause instead.
-		keyMsg := fmt.Sprintf("device key pair: %v", keyErr)
-		recordLoginOutcome(state, false, keyMsg)
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		closeListener(lc.listener)
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusError,
-			Message: keyMsg,
-		})
-	}
-	di := intlbuildOfficialDeviceInfo(
-		lc.deviceID, lc.machineID, oauthPlatformCode, intlOauthDeviceName,
-		intlOauthDeviceBrand, loadedAppVersion(), intlOauthDeviceType, intlOauthOSVersion, pubKeyPEM,
-	)
-	tokenBody := map[string]any{
-		"ClientID":     intlupstreamClient.ClientID,
-		"AuthCode":     lc.authCode,
-		"CodeVerifier": lc.codeVerifier,
-		"DeviceInfo":   di,
-		"IDEVersion":   loadedAppVersion(),
-	}
-	tokenBytes, _ := json.Marshal(tokenBody)
-	tokenRaw, exErr := intlexchangeTokenCandidates(
-		intlauthCodeExchangeURLs(lc.loginHost, lc.userTag), tokenBytes)
-	if exErr != nil {
-		recordLoginOutcome(state, false, exErr.Error())
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		closeListener(lc.listener)
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusError,
-			Message: exErr.Error(),
-		})
-	}
-	var tokenEnv struct {
-		Result struct {
-			Token           string `json:"Token"`
-			AccessToken     string `json:"AccessToken"`
-			TokenExpireAt   int64  `json:"TokenExpireAt"`
-			RefreshToken    string `json:"RefreshToken"`
-			RefreshExpireAt int64  `json:"RefreshExpireAt"`
-		} `json:"Result"`
-	}
-	if err := json.Unmarshal(tokenRaw, &tokenEnv); err != nil {
-		recordLoginOutcome(state, false, fmt.Sprintf("parse ExchangeToken: %v", err))
-		clearPendingLogin(lc.authDir)
-		intlloginStates.Delete(state)
-		closeListener(lc.listener)
-		return okEnvelope(pluginapi.AuthLoginPollResponse{
-			Status:  pluginapi.AuthLoginStatusError,
-			Message: fmt.Sprintf("parse ExchangeToken: %v", err),
-		})
-	}
-	if tokenEnv.Result.AccessToken != "" && tokenEnv.Result.Token == "" {
-		tokenEnv.Result.Token = tokenEnv.Result.AccessToken
-	}
-	a := &upstream.Auth{
-		AccessToken:  tokenEnv.Result.Token,
-		RefreshToken: tokenEnv.Result.RefreshToken,
-		ExpiresAt:    intlnormalizeExpiresAt(tokenEnv.Result.TokenExpireAt),
-		APIHost:      intlupstreamClient.OAuthHost,
-		Domain:       "trae.ai",
-		Region:       "US-East",
-		Scope:        "marscode-us",
-		Tenant:       "marscode",
-		UserIdentity: "Free",
-		AppLanguage:  "en",
-		AppVersion:   "1.0.0.1229",
-	}
-	uid, nickname, entID, err := intlupstreamClient.GetUserInfo(a)
-	if err != nil {
-		log.Printf("GetUserInfo failed: %v — proceeding with callback/unknown identity", err)
-	}
-	// v0.12.25: identity chain (see handlePollLogin CN) — intl realm.
-	a.UID = resolveLoginUID(uid, lc.cbUID, "intl")
-	a.Nickname = resolveLoginNickname(nickname, lc.cbNickname)
-	a.EnterpriseID = entID
-	// v0.12.44: credential parity extras (platformId/authClientId/exchange
-	// echo/region) — same helper as the CN login; profile raw not available
-	// from the intl client, region fields land only when the exchange echo
-	// carries them (不猜测).
-	authFields := map[string]any{
-		"accessToken":  a.AccessToken,
-		"refreshToken": a.RefreshToken,
-		"expiresAt":    a.ExpiresAt,
-		"domain":       a.Domain,
-		"apiHost":      a.APIHost,
-		// v0.12.72 (issue #29 field report): persist the OAuth-bound device
-		// identity — the login binds it server-side, so the auth file must
-		// carry it (was missing: device_id_set surfaced false, X-Device-Id
-		// empty on the intl pay face).
-		"machineId":        lc.machineID,
-		"deviceId":         lc.deviceID,
-		"variant":          "intl",
-		"region":           a.Region,
-		"scope":            a.Scope,
-		"tenant":           a.Tenant,
-		"appLanguage":      a.AppLanguage,
-		"appVersion":       a.AppVersion,
-		"devicePublicKey":  pubKeyPEM,
-		"devicePrivateKey": privKeyPEM,
-	}
-	accountFields := map[string]any{
-		"uid":          a.UID,
-		"enterpriseId": a.EnterpriseID,
-		"nickname":     a.Nickname,
-	}
-	authExtras, accountExtras := credentialParityFields("intl", lc.loginHost, tokenRaw, nil)
-	for k, v := range authExtras {
-		if _, exists := authFields[k]; !exists { // intl 固有字段优先
-			authFields[k] = v
-		}
-	}
-	for k, v := range accountExtras {
-		accountFields[k] = v
-	}
-	storageJSON, _ := json.MarshalIndent(map[string]any{
-		"type":     intlproviderName,
-		"provider": intlproviderName,
-		"auth":     authFields,
-		"account":  accountFields,
-		"disabled": false,
-	}, "", "  ")
-	recordLoginOutcome(state, true, "")
-	clearPendingLogin(lc.authDir)
-	intlloginStates.Delete(state)
-	closeListener(lc.listener)
-	return okEnvelope(pluginapi.AuthLoginPollResponse{
-		Status:  pluginapi.AuthLoginStatusSuccess,
-		Message: fmt.Sprintf("login complete (uid=%s)", a.UID),
-		Auth: pluginapi.AuthData{
-			// v0.12.8: ID must equal the saved file name (single record).
-			Provider:    intlproviderName,
-			ID:          fmt.Sprintf("%s-%s.json", intlproviderName, a.UID),
-			FileName:    fmt.Sprintf("%s-%s.json", intlproviderName, a.UID),
-			Label:       intlnonEmpty(a.Nickname, "Trae Intl "+a.UID),
-			StorageJSON: storageJSON,
-			Metadata:    map[string]any{"type": intlproviderName, "uid": a.UID, "nickname": a.Nickname, "note": "INTL"},
-		},
-	})
+	return pollLoginIntl(request)
 }
 
-func intlhandleRefreshAuth(request []byte) ([]byte, error) {
-	var req pluginapi.AuthRefreshRequest
-	if err := json.Unmarshal(request, &req); err != nil {
-		return nil, err
-	}
-	a, err := intlparseStoredAuth(req.StorageJSON)
-	if err != nil {
-		return nil, fmt.Errorf("refresh: parse auth: %w", err)
-	}
-	if err := intlupstreamClient.RefreshToken(a); err != nil {
-		return nil, fmt.Errorf("refresh: ExchangeToken: %w", err)
-	}
-	storageJSON, _ := json.MarshalIndent(map[string]any{
-		"type":     intlproviderName,
-		"provider": intlproviderName,
-		// v0.12.72: carry the device identity + key material through refresh —
-		// this map REPLACES the auth file, so anything omitted here is lost.
-		"auth": map[string]any{
-			"accessToken":      a.AccessToken,
-			"refreshToken":     a.RefreshToken,
-			"expiresAt":        a.ExpiresAt,
-			"domain":           a.Domain,
-			"apiHost":          a.APIHost,
-			"machineId":        a.MachineID,
-			"deviceId":         a.DeviceID,
-			"devicePublicKey":  a.DevicePublicKey,
-			"devicePrivateKey": a.DevicePrivateKey,
-			"variant":          "intl",
-			"region":           a.Region,
-			"scope":            a.Scope,
-			"tenant":           a.Tenant,
-			"appLanguage":      a.AppLanguage,
-			"appVersion":       a.AppVersion,
-		},
-		"account": map[string]any{
-			"uid":          a.UID,
-			"enterpriseId": a.EnterpriseID,
-			"nickname":     a.Nickname,
-		},
-		"disabled": false,
-	}, "", "  ")
-	return okEnvelope(pluginapi.AuthRefreshResponse{
-		Auth: pluginapi.AuthData{
-			// v0.12.8: empty ID — host keeps the existing record's ID.
-			Provider:    intlproviderName,
-			ID:          "",
-			FileName:    fmt.Sprintf("%s-%s.json", intlproviderName, a.UID),
-			Label:       intlnonEmpty(a.Nickname, "Trae Intl "+a.UID),
-			StorageJSON: storageJSON,
-			Metadata:    map[string]any{"type": intlproviderName, "uid": a.UID, "note": "INTL"},
-		},
-		NextRefreshAfter: time.Now().Add(12 * time.Hour).UTC(),
-	})
-}
+func intlhandleRefreshAuth(request []byte) ([]byte, error) { return refreshAuthRequest(request) }
 
 // -----------------------------------------------------------------------------
 // Executor: execute + execute_stream
@@ -927,13 +623,9 @@ func intlhandleExecExecute(request []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("execute: parse auth: %w", err)
 	}
-	// Refresh token if needed (within 24h of expiry).
-	refreshed, err := intlupstreamClient.RefreshTokenIfNeeded(a, 24*time.Hour)
+	a, err = refreshIntlExecutorAuth(req, a)
 	if err != nil {
-		return nil, fmt.Errorf("execute: refresh: %w", err)
-	}
-	if refreshed {
-		intlpersistRefreshedAuth(req, a)
+		return nil, fmt.Errorf("refresh: %w", err)
 	}
 	// Parse OpenAI messages from payload.
 	var openaiReq struct {
@@ -967,13 +659,9 @@ func intlhandleExecStream(request []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stream: parse auth: %w", err)
 	}
-	// Refresh token if needed (within 24h of expiry).
-	refreshed, err := intlupstreamClient.RefreshTokenIfNeeded(a, 24*time.Hour)
+	a, err = refreshIntlExecutorAuth(req.ExecutorRequest, a)
 	if err != nil {
-		return nil, fmt.Errorf("stream: refresh: %w", err)
-	}
-	if refreshed {
-		intlpersistRefreshedAuth(req.ExecutorRequest, a)
+		return nil, fmt.Errorf("refresh: %w", err)
 	}
 	var openaiReq struct {
 		Model    string           `json:"model"`
@@ -1180,6 +868,7 @@ func intlbuildVerificationURI(loginHost string, p intlverificationURIParams) str
 
 // intlloginCtx holds the local callback listener for one in-flight OAuth flow.
 type intlloginCtx struct {
+	loginProgress
 	listener      net.Listener
 	state         string
 	cbURL         string
@@ -1228,22 +917,17 @@ func intlacceptCallback(state string) {
 		return
 	}
 	lc := v.(*intlloginCtx)
-	lc.done = make(chan struct{})
-	defer close(lc.done)
 
 	ln := lc.listener
 	_ = ln.(*net.TCPListener).SetDeadline(time.Now().Add(loginTTL))
 	for {
-		if time.Now().After(lc.expires) {
+		if lc.CreatedAt != 0 && time.Now().After(time.Unix(lc.CreatedAt, 0).Add(loginTTL)) {
 			closeListener(lc.listener)
 			return
 		}
 		conn, err := ln.Accept()
 		if err != nil {
-			// Deadline exceeded or listener closed — janitor cleans the state.
-			if lc.err == nil {
-				lc.err = fmt.Errorf("callback accept: %w", err)
-			}
+
 			closeListener(lc.listener)
 			return
 		}
@@ -1293,78 +977,15 @@ func intlHandleCallbackConn(conn net.Conn, lc *intlloginCtx) bool {
 	}
 	vals, _ := url.ParseQuery(rest[q+1:])
 
-	// Error path (same parameter names as the CN/SOLO callback).
-	for _, k := range []string{"error", "error_code", "err", "errorCode"} {
-		if ev := vals.Get(k); ev != "" {
-			lc.err = fmt.Errorf("oauth callback error: %s=%s", k, ev)
-			writeCallbackHTML(conn, "Login failed", lc.err.Error())
-			return true
-		}
-	}
-	if ir := vals.Get("isRedirect"); ir == "false" {
-		lc.err = fmt.Errorf("oauth callback: isRedirect=false")
-		writeCallbackHTML(conn, "Login failed", "isRedirect=false")
-		return true
-	}
-
-	// loginHost (used for ExchangeToken; falls back to the Intl default).
-	for _, k := range []string{"loginHost", "login_host", "LoginHost", "host", "consoleHost"} {
-		if v := vals.Get(k); v != "" {
-			lc.loginHost = v
-			break
-		}
-	}
-
-	// userTag (v0.12.24): USTTP accounts exchange against the US origin
-	// (grow-normal.traeapi.us) instead of the SG default (cockpit-tools
-	// TraeCallbackPayload.user_tag).
-	for _, k := range []string{"userTag", "user_tag", "UserTag"} {
-		if v := vals.Get(k); v != "" {
-			lc.userTag = v
-			break
-		}
-	}
-
-	// userInfo echo (v0.12.77 parity with the resource-callback route +
-	// per-account derived device identity, see handleCallbackConn).
-	if id := parseCallbackIdentity(vals); id.UID != "" {
-		lc.cbUID = id.UID
-		if id.Nickname != "" {
-			lc.cbNickname = id.Nickname
-		}
-		applyDerivedIdentityIntl(lc, id.UID)
-	}
-
-	// Auth code (multiple names; first non-empty wins).
-	for _, k := range []string{"authCode", "auth_code", "AuthCode", "authorization_code", "code"} {
-		if v := vals.Get(k); v != "" {
-			lc.authCode = v
-			break
-		}
-	}
-
-	// authCodeInfo — extract auth code from JSON payload.
-	if lc.authCode == "" {
-		for _, k := range []string{"authCodeInfo", "auth_code_info", "AuthCodeInfo"} {
-			if v := vals.Get(k); v != "" {
-				if ac := extractAuthCodeFromAuthCodeInfo(v); ac != "" {
-					lc.authCode = ac
-					break
-				}
-			}
-		}
-	}
-
-	// Final sanity check + browser response.
-	switch {
-	case lc.err != nil:
-		writeCallbackHTML(conn, "Login failed", lc.err.Error())
-		return true
-	case lc.authCode != "":
-		writeCallbackHTML(conn, "Login successful", "You can close this window now.")
-		return true
-	default:
+	msg, accepted := acceptLoginCallbackIntl(lc, vals)
+	if !accepted {
 		writeCallbackStatus(conn, "404 Not Found")
 		return false
 	}
+	if msg != "" {
+		writeCallbackHTML(conn, "Login failed", msg)
+	} else {
+		writeCallbackHTML(conn, "Login successful", "Callback received; credentials are being prepared.")
+	}
+	return true
 }

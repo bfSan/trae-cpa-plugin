@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/auth"
-	"github.com/mmqz/cpa-multi-plugins/plugins/trae/upstream"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -25,6 +25,7 @@ func persistTestStorage(token, variant, extraJSON string) []byte {
 func stubPersistSeams(t *testing.T, files map[string][]byte) func() {
 	t.Helper()
 	origList, origGet, origSave, origIntlSave := hostAuthListFn, hostAuthRawFn, hostAuthSaveFn, intlSaveFn
+	oldML, oldMR, oldMS := maintenanceAuthList, maintenanceAuthRaw, maintenanceAuthSave
 	capturedSaves = make([]string, 0, 8)
 	hostAuthListFn = func() ([]pluginapi.HostAuthFileEntry, error) {
 		out := make([]pluginapi.HostAuthFileEntry, 0, len(files))
@@ -51,8 +52,10 @@ func stubPersistSeams(t *testing.T, files map[string][]byte) func() {
 		return nil
 	}
 	intlSaveFn = hostAuthSaveFn
+	maintenanceAuthList, maintenanceAuthRaw, maintenanceAuthSave = hostAuthListFn, hostAuthRawFn, hostAuthSaveFn
 	return func() {
 		hostAuthListFn, hostAuthRawFn, hostAuthSaveFn, intlSaveFn = origList, origGet, origSave, origIntlSave
+		maintenanceAuthList, maintenanceAuthRaw, maintenanceAuthSave = oldML, oldMR, oldMS
 	}
 }
 
@@ -115,15 +118,15 @@ func TestPersistedSnapshotSameVariantOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse cn: %v", err)
 	}
-	if got := modelsForVariant(aCN, persistTestStorage("tok-ask-cn", "cn", "")); len(got) != 1 || got[0].ID != "m-cn-peer" {
-		t.Fatalf("cn ask: want cn peer snapshot, got %+v", got)
+	if got := modelsForVariant(aCN, persistTestStorage("tok-ask-cn", "cn", "")); len(got) != 0 {
+		t.Fatalf("cn ask: must not borrow peer entitlement, got %+v", got)
 	}
 	aSolo, err := parseStoredAuth(persistTestStorage("tok-ask-solo", "solo", ""))
 	if err != nil {
 		t.Fatalf("parse solo: %v", err)
 	}
-	if got := modelsForVariant(aSolo, persistTestStorage("tok-ask-solo", "solo", "")); len(got) != 1 || got[0].ID != "m-solo-peer-solo" {
-		t.Fatalf("solo ask: want solo peer snapshot, got %+v", got)
+	if got := modelsForVariant(aSolo, persistTestStorage("tok-ask-solo", "solo", "")); len(got) != 0 {
+		t.Fatalf("solo ask: must not borrow peer entitlement, got %+v", got)
 	}
 }
 
@@ -298,7 +301,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup := groupsByVariant(t, payload)["cn"]
-	if cnGroup.Source != "refreshed" || cnGroup.Count != 2 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Source != "queried" || cnGroup.Count != 2 || cnGroup.Models[0].ID != "m-fresh-1" {
 		t.Fatalf("refresh group = source %q count %d — fresh discovery should win", cnGroup.Source, cnGroup.Count)
 	}
 
