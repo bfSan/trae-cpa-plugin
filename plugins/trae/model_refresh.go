@@ -333,7 +333,7 @@ func discoverAccountModels(a *auth.Auth, raw []byte) ([]pluginapi.ModelInfo, map
 		seen[m.ID] = true
 		id := m.ID + suffix
 		out = append(out, pluginapi.ModelInfo{ID: id, Name: m.Name, ContextLength: m.ContextWindow, MaxCompletionTokens: m.MaxTokens,
-			Thinking: thinkingSupportForFacts(m.Facts, upstream.FunctionFor(a.Variant))})
+			Thinking: thinkingSupportForFacts(m.Facts, a.Variant)})
 		facts[id] = m.Facts
 	}
 	return out, facts, nil
