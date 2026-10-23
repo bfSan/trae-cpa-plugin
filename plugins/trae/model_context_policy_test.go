@@ -56,7 +56,7 @@ func TestContextPolicyLegacyCachePreservedOnFailedMigration(t *testing.T) {
 	if string(before) != string(after) {
 		t.Fatal("migration failure recomputed or modified legacy cache")
 	}
-	if st := readModelRefreshState(f.doc); st.SchemaVersion != 3 || st.Status != "failed" {
+	if st := readModelRefreshState(f.doc); st.SchemaVersion != modelCacheSchemaVersion || st.Status != "failed" {
 		t.Fatalf("missing new-policy checkpoint: %+v", st)
 	}
 	refreshAccountModels("idx", false)
@@ -78,7 +78,7 @@ func TestContextPolicyMigrationRegistersEffectiveWindowWithoutReceipt(t *testing
 		t.Fatalf("registration=%+v calls=%d", models, calls.Load())
 	}
 	cache := readModelCacheDoc(f.doc)
-	if cache.SchemaVersion != 3 || cache.Facts["m"].ContextEvidence != nil || cache.Facts["m"].Context != 200000 {
+	if cache.SchemaVersion != modelCacheSchemaVersion || cache.Facts["m"].ContextEvidence != nil || cache.Facts["m"].Context != 200000 {
 		t.Fatalf("registration invented evidence or lost raw primary declaration: %+v", cache)
 	}
 }

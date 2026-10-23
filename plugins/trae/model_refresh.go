@@ -16,20 +16,20 @@ import (
 )
 
 // Schema 3 covers maximum context policy and Intl grouped-model envelopes.
-const modelCacheSchemaVersion = 3
+const modelCacheSchemaVersion = 4
 
 func modelCacheSchemaForRealm(realm string) int {
 	return modelCacheSchemaVersion
 }
 
 // An old-policy failed/partial/in-progress attempt still owns its daily retry
-// budget. Successful schema-2 CN/Solo caches refresh once for the new policy.
+// budget. Successful older-schema caches refresh once for a new policy.
 func modelRefreshStateCurrent(state modelRefreshState, realm string) bool {
 	if realm == variantIntl && state.Realm == realm && state.SchemaVersion == 2 && state.Status == "failed" && strings.HasPrefix(state.Error, "models parse: json: cannot unmarshal object") {
 		return false
 	}
 	return state.Realm == realm && (state.SchemaVersion == modelCacheSchemaForRealm(realm) ||
-		(state.SchemaVersion == 2 && (state.Status == "failed" || state.Status == "partial" || state.Status == "in_progress")))
+		(state.SchemaVersion >= 2 && state.SchemaVersion < modelCacheSchemaForRealm(realm) && (state.Status == "failed" || state.Status == "partial" || state.Status == "in_progress")))
 }
 
 const modelRefreshInterval = 24 * time.Hour
