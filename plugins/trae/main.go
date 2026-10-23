@@ -131,7 +131,7 @@ const (
 // version is injected at build time via -ldflags "-X main.version=...".
 // Keep the default in sync with the release tag: the shipped build.sh does
 // NOT inject it (only "-s -w"), so the plugin reports this literal value.
-var version = "0.13.6"
+var version = "0.13.7"
 
 var (
 	hostAPI *C.cliproxy_host_api
@@ -516,7 +516,7 @@ func suffixModels(in []pluginapi.ModelInfo, suffix string) []pluginapi.ModelInfo
 	out := make([]pluginapi.ModelInfo, 0, len(in))
 	for _, m := range in {
 		out = append(out, pluginapi.ModelInfo{ID: m.ID + suffix, Name: m.Name, OwnedBy: m.OwnedBy,
-			ContextLength: m.ContextLength, MaxCompletionTokens: m.MaxCompletionTokens})
+			ContextLength: m.ContextLength, MaxCompletionTokens: m.MaxCompletionTokens, Thinking: m.Thinking})
 	}
 	return out
 }
