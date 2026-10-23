@@ -171,3 +171,37 @@ func TestPromotionEnvelopeUnknownVersusKnownEmpty(t *testing.T) {
 		t.Fatal("stale envelope claims known")
 	}
 }
+
+func TestPromotionCurrentDeduplicatesOnlySameCampaign(t *testing.T) {
+	p := upstream.ModelPromotion{Kind: "off_peak", Multiplier: factFloat(0.06), BaseMultiplier: factFloat(0.12), TimeWindows: []upstream.ModelTimeWindow{{TimeZone: "Asia/Shanghai", StartMinute: factInt(0), EndMinute: factInt(540)}}}
+	c := p
+	c.Kind = "current"
+	c.DiscountType = "off_peak"
+	if !currentPromotionCovers(p, []upstream.ModelPromotion{c, p}) {
+		t.Fatal("duplicate campaign retained")
+	}
+	other := p
+	other.Kind = "member"
+	if currentPromotionCovers(other, []upstream.ModelPromotion{c, p, other}) {
+		t.Fatal("different eligibility lost")
+	}
+	p.Multiplier = factFloat(0.03)
+	if currentPromotionCovers(p, []upstream.ModelPromotion{c, p}) {
+		t.Fatal("different price lost")
+	}
+	if promotionTitle(c) != "闲时折扣" || promotionTitle(other) != "会员专享" {
+		t.Fatal("untranslated campaign kind")
+	}
+}
+func TestPromotionUnknownReasonsAreSpecific(t *testing.T) {
+	now := time.Now()
+	fetched := now.Format(time.RFC3339)
+	p := upstream.ModelPromotion{Kind: "off_peak", TimeWindows: []upstream.ModelTimeWindow{{StartMinute: factInt(0), EndMinute: factInt(480)}}}
+	if status, why, _ := promotionStatus(p, fetched, false, now); status != "unknown" || why != "missing_timezone" {
+		t.Fatalf("%s %s", status, why)
+	}
+	p = upstream.ModelPromotion{Kind: "member"}
+	if _, why, _ := promotionStatus(p, fetched, false, now); why != "membership_not_confirmed" {
+		t.Fatal(why)
+	}
+}

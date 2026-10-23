@@ -32,6 +32,10 @@ import (
 	"time"
 )
 
+// The browser authorization page is served by the public Intl website, not
+// an account API origin. Keep this fallback separate from all exchange hosts.
+const intlOAuthFallbackLoginHost = "https://www.trae.ai"
+
 // Platform GetLoginGuidance endpoint lists — cockpit-tools
 // TRAE_LOGIN_GUIDANCE_URLS (trae_oauth.rs:36-39).
 var intlLoginGuidanceURLs = []string{
@@ -194,8 +198,8 @@ func intlrequestLoginGuidance(cn bool, loginTraceID string) (loginHost string, l
 	// The guidance call is best-effort — its only job is picking the login
 	// page domain; the actual login happens in the user's browser.
 	log.Printf("[Trae OAuth] intl login guidance failed (%s) — falling back to default login host %s",
-		strings.Join(errs, " | "), intlOAuthDefaultHost)
-	return intlOAuthDefaultHost, nil
+		strings.Join(errs, " | "), intlOAuthFallbackLoginHost)
+	return intlOAuthFallbackLoginHost, nil
 }
 
 // intlsurfaceUpstreamError extracts the Volcengine-style

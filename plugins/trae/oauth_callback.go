@@ -398,9 +398,30 @@ func handleOAuthSubmitResource(req pluginapi.ManagementRequest) []byte {
 		return callbackResultHTML("Invalid callback URL",
 			"The pasted text is not a parseable URL with query parameters. Copy the full address-bar URL shown after the authorization redirect fails.")
 	}
+	vals := u.Query()
+	if isAuthorizationInitiationURL(u, vals) {
+		// Reject before resolving/restoring any state: an initiation URL is
+		// not a callback and must never consume or alter an existing login.
+		return callbackResultHTML("Authorization not completed",
+			"这是授权起始链接，不是登录完成后的回调链接。请继续在原授权窗口完成登录，再复制含 authCodeInfo/authCode 的完整回调地址；若授权页一直加载，请检查该页网络请求，不要重复发起登录。The pending login is unchanged.")
+	}
 	// Replay through the shared resolution path — cn/solo/intl states all
 	// resolve here (loginStates + intlloginStates via resolveCallbackState).
-	return handleOAuthCallbackResource(pluginapi.ManagementRequest{Query: u.Query()})
+	return handleOAuthCallbackResource(pluginapi.ManagementRequest{Query: vals})
+}
+
+// isAuthorizationInitiationURL distinguishes the browser authorization request
+// from its result. Callback result fields take precedence, including callbacks
+// wrapped in an official landing URL that retains some initiation parameters.
+func isAuthorizationInitiationURL(u *url.URL, vals url.Values) bool {
+	for _, key := range []string{"authCodeInfo", "auth_code_info", "AuthCodeInfo", "authCode", "auth_code", "AuthCode", "authorization_code", "code", "refreshToken", "refresh_token", "RefreshToken", "refresh-token", "error", "error_code", "err", "errorCode", "isRedirect"} {
+		if vals.Get(key) != "" {
+			return false
+		}
+	}
+	return strings.TrimRight(u.Path, "/") == "/authorization" ||
+		vals.Get("code_challenge") != "" || vals.Get("auth_callback_url") != "" ||
+		(vals.Get("client_id") != "" && (vals.Get("redirect_uri") != "" || vals.Get("login_trace_id") != ""))
 }
 
 // sanitizePastedCallback normalizes the pasted redirect URL. Users paste from
@@ -410,7 +431,10 @@ func handleOAuthSubmitResource(req pluginapi.ManagementRequest) []byte {
 // (v0.12.17: a truncated authCodeInfo used to surface as the misleading
 // "no authCode/refreshToken in callback params").
 func sanitizePastedCallback(raw string) (clean, truncErr string) {
-	s := strings.TrimSpace(raw)
+	// Decode the HTML-copy boundary once, before URL parsing. Never URL-decode
+	// the full string (encoded ampersands inside grant values are not separators)
+	// and never recursively unescape double-escaped input.
+	s := strings.TrimSpace(strings.NewReplacer("&amp;", "&", "&#38;", "&", "&#x26;", "&", "&#X26;", "&").Replace(raw))
 	s = strings.Trim(s, "\"'`“”‘’<>()[]{}《》「」『』【】")
 	s = strings.TrimSpace(strings.TrimRight(s, ",;，；"))
 	if s == "" {

@@ -31,8 +31,15 @@ func TestIntlLoginGuidance_FallsBackToDefaultHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected default-host fallback, got error: %v", err)
 	}
-	if host != intlOAuthDefaultHost {
-		t.Errorf("fallback host = %q, want %q", host, intlOAuthDefaultHost)
+	if host != "https://www.trae.ai" {
+		t.Errorf("fallback must be the Intl website, got %q", host)
+	}
+	verificationURL, err := url.Parse(intlbuildVerificationURI(host, intlverificationURIParams{}))
+	if err != nil || verificationURL.Host != "www.trae.ai" || verificationURL.Path != "/authorization" {
+		t.Fatal("fallback did not produce the public Intl authorization route")
+	}
+	if intlOAuthDefaultHost != "https://api.marscode.com" {
+		t.Fatal("account API origin must not be changed with the browser fallback")
 	}
 }
 

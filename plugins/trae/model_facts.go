@@ -82,6 +82,11 @@ func promotionStatus(p upstream.ModelPromotion, fetched string, stale bool, now 
 	if len(p.TimeWindows) > 0 {
 		active, known := promotionWindowMatch(p.TimeWindows, now)
 		if !known {
+			for _, w := range p.TimeWindows {
+				if w.TimeZone == "" {
+					return "unknown", "missing_timezone", next
+				}
+			}
 			return "unknown", "unsupported_timezone_or_weekdays", next
 		}
 		// A bounded minute scan respects named zones, weekdays, DST and midnight.
@@ -110,6 +115,9 @@ func promotionStatus(p upstream.ModelPromotion, fetched string, stale bool, now 
 	}
 	if p.StartAt != nil || p.EndAt != nil {
 		return "active", "within_campaign_bounds", next
+	}
+	if p.Kind == "member" {
+		return "unknown", "membership_not_confirmed", next
 	}
 	return "unknown", "missing_schedule", next
 }
@@ -326,6 +334,9 @@ func promotionsForGroups(groups []modelGroup, now time.Time) modelPromotionsResp
 					missing = true
 				}
 				for pi, p := range f.Promotions {
+					if currentPromotionCovers(p, f.Promotions) {
+						continue
+					}
 					// Ordinary current pricing is evidence, not a campaign card.
 					if p.Kind == "current" && (p.DiscountType == "none" || (p.DiscountPercent != nil && *p.DiscountPercent >= 100) || (p.Multiplier != nil && p.BaseMultiplier != nil && *p.Multiplier >= *p.BaseMultiplier)) {
 						continue
@@ -334,7 +345,7 @@ func promotionsForGroups(groups []modelGroup, now time.Time) modelPromotionsResp
 					if p.Kind == "current" && f.RateStale && !f.Stale {
 						status, reason = "unknown", "rate_observation_crossed_boundary"
 					}
-					out.Items = append(out.Items, modelPromotionView{ModelPromotion: p, ID: fmt.Sprintf("%s:%s:%d", f.AccountScope, m.ID, pi), Title: p.Kind, Realm: g.Realm, ModelID: m.ID, Models: []string{m.ID}, AccountScope: f.AccountScope, Status: status, StatusReason: reason, FetchedAt: f.FetchedAt, SnapshotStale: f.Stale, NextChange: next})
+					out.Items = append(out.Items, modelPromotionView{ModelPromotion: p, ID: fmt.Sprintf("%s:%s:%d", f.AccountScope, m.ID, pi), Title: promotionTitle(p), Realm: g.Realm, ModelID: m.ID, Models: []string{m.ID}, AccountScope: f.AccountScope, Status: status, StatusReason: reason, FetchedAt: f.FetchedAt, SnapshotStale: f.Stale, NextChange: next})
 				}
 			}
 		}
@@ -393,4 +404,36 @@ func aggregateThinkingDefault(row *modelGroupEntry) {
 	}
 	row.Thinking = current
 	row.ThinkingState = "known"
+}
+
+func promotionTitle(p upstream.ModelPromotion) string {
+	kind := p.Kind
+	if kind == "current" && p.DiscountType != "" && p.DiscountType != "none" {
+		kind = p.DiscountType
+	}
+	if title, ok := map[string]string{"current": "当前优惠", "limited": "限时优惠", "off_peak": "闲时折扣", "subsidy": "平台补贴", "member": "会员专享"}[kind]; ok {
+		return title
+	}
+	return kind
+}
+func currentPromotionCovers(candidate upstream.ModelPromotion, all []upstream.ModelPromotion) bool {
+	if candidate.Kind == "current" {
+		return false
+	}
+	for _, current := range all {
+		if current.Kind != "current" || current.DiscountType != candidate.Kind || current.Multiplier == nil || candidate.Multiplier == nil {
+			continue
+		}
+		c, p := current, candidate
+		c.Kind = ""
+		c.DiscountType = ""
+		p.Kind = ""
+		p.DiscountType = ""
+		a, _ := json.Marshal(c)
+		b, _ := json.Marshal(p)
+		if bytes.Equal(a, b) {
+			return true
+		}
+	}
+	return false
 }

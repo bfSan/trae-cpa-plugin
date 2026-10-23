@@ -89,11 +89,11 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}.ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
 .filter-chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}#accountTools .field-input{flex:1 1 180px}#accountCount{white-space:nowrap}.field-input{min-width:0}.local-sort{background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px;color:var(--fg)}
 .login-help{margin-bottom:16px}.login-help summary{cursor:pointer;color:var(--mut);font-size:12px}.login-help[open] summary{margin-bottom:10px}.login-note{font-size:12px;color:var(--mut);margin:8px 0}
-.model-table-wrap{overflow-x:auto;max-width:100%}.model-table{min-width:1020px}.model-rows{display:flex;flex-direction:column;gap:6px;max-height:560px;overflow:auto;padding-right:2px}
-.model-head,.model-row{display:grid;grid-template-columns:38px minmax(150px,1.2fr) repeat(3,minmax(140px,1fr)) 280px;align-items:center;gap:10px;padding:8px 10px}
+.model-table-wrap{overflow-x:auto;max-width:100%}.model-table{min-width:880px}.model-rows{display:flex;flex-direction:column;gap:6px;padding-right:2px}
+.model-head,.model-row{display:grid;grid-template-columns:38px minmax(150px,1.2fr) repeat(3,minmax(160px,1fr)) 86px;align-items:center;gap:10px;padding:8px 10px}
 .model-head{color:var(--mut);font-size:12px;font-weight:700;border-bottom:1px solid var(--border)}.model-row{border:1px solid var(--border);border-radius:8px;background:var(--surface)}
 .drag-handle{cursor:grab;touch-action:none;background:var(--btn-sec);color:var(--mut);border:1px solid var(--border);border-radius:99px;padding:3px 9px;font-size:18px}.drag-handle:active{cursor:grabbing}.drag-handle:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
-.model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.model-name{font-size:12px;color:var(--mut);overflow-wrap:anywhere}.realm-cell{min-width:0}.realm-facts{display:flex;flex-direction:column;gap:2px;color:var(--mut);font-size:12px;white-space:nowrap}.realm-facts>span{overflow:hidden;text-overflow:ellipsis}.realm-facts>span:first-child{color:var(--fg)}
+.model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.model-name{font-size:12px;color:var(--mut);overflow-wrap:anywhere}.realm-cell{min-width:0}.realm-facts{display:flex;flex-direction:column;gap:4px;color:var(--mut);font-size:12px;white-space:normal;overflow-wrap:anywhere;line-height:1.6}.realm-facts>span{min-width:0}.realm-facts>span:first-child{color:var(--fg)}
 .realm-facts span.ctx-default,.realm-facts span.thinking-default{color:var(--acc);font-weight:700}.model-actions{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}.model-actions>*{white-space:nowrap}.model-actions .ftag{padding:3px 8px;font-size:12px}.model-actions .hidden-model{color:var(--warn);border-color:var(--warn-border)}.mg-meta{color:var(--mut);font-size:11px}.mg-locked{color:var(--mut)}
 .promo-box{padding:12px 16px;margin:16px 0}.promo-hd{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}.promo-title{font-weight:700;font-size:14px;cursor:pointer;user-select:none}.promo-live{color:var(--ok)}.promo-live.zero{color:var(--mut)}.promo-meta{color:var(--mut);font-size:12px}.promo-list{display:flex;flex-direction:column;gap:5px;margin-top:10px}
 .promo-row{display:grid;grid-template-columns:minmax(84px,auto) minmax(140px,1.3fr) minmax(64px,auto) minmax(60px,auto) minmax(150px,1.2fr);gap:10px;align-items:center;padding:7px 9px;border-radius:8px;background:var(--surface);font-size:12px;border-left:3px solid var(--mut-border)}.promo-row.on{border-left-color:var(--ok);background:var(--ok-soft)}.promo-row.off{opacity:.72}.promo-badge{font-weight:700;color:var(--mut)}.promo-badge.on,.promo-state.on{color:var(--ok)}.promo-model{font-family:ui-monospace,monospace;font-weight:600;overflow-wrap:anywhere}.promo-price{font-weight:700;font-variant-numeric:tabular-nums}.promo-realm,.promo-state{color:var(--mut);font-size:11px}
@@ -300,6 +300,7 @@ function progressHTML(cr,acct){
 }
 
 let lastAccounts=[];
+const accountRefreshPending=new Set();
 
 let authFailCount=0;
 let authFailUntil=0;
@@ -313,8 +314,7 @@ function bindCardActions(root){
       const idx=ev.currentTarget.dataset.authIndex;
       const uid=ev.currentTarget.dataset.uid||"";
       if(act==="checkin") checkin(idx, uid, ev.currentTarget);
-      else if(act==="refresh") refreshCredits(idx, ev.currentTarget);
-      else if(["rename","disable","enable","delete","token-refresh"].includes(act)) accountAction(act, idx, ev.currentTarget);
+      else if(["rename","disable","enable","delete","token-refresh"].includes(act)) return accountAction(act, idx, ev.currentTarget);
     });
   });
 }
@@ -336,7 +336,7 @@ function card(a){
     `<span class="${planBadgeClass(plan)}">${esc(plan)}</span>`;
   const attrs=`data-auth-index="${escAttr(a.auth_index)}" data-uid="${escAttr(a.uid)}"`;
   const action=(name,label,extra="")=>`<button class="sec" data-action="${name}" ${attrs} ${extra}>${label}</button>`;
-  let actions=action("refresh","刷新额度")+action("token-refresh","刷新凭证");
+  let actions=action("token-refresh","刷新",(a.disabled||accountRefreshPending.has(a.auth_index))?'disabled':'');
   if(!isIntl) actions+=`<button class="${checkedIn?"done":"sec"}" data-action="checkin" ${attrs}${checkedIn||a.disabled?' disabled':''}>${checkedIn?"已签到":"签到"}</button>`;
   actions+=action("rename","重命名")+action(a.disabled?"enable":"disable",a.disabled?"启用":"禁用")+action("delete","删除");
   return `<div class="card" data-uid="${escAttr(a.uid)}" data-auth="${escAttr(a.auth_index)}">
@@ -366,11 +366,12 @@ function renderAccounts(){
   bindCardActions(grid);
 }
 async function accountAction(action,index,btn){
-  const a=lastAccounts.find(x=>x.auth_index===index);if(!a)return;
+  const a=lastAccounts.find(x=>x.auth_index===index);if(!a||action==="token-refresh"&&(a.disabled||accountRefreshPending.has(index)))return;
   const body={action,auth_index:index};
   if(action==="rename"){const label=prompt("账号显示名称",a.label||a.nickname||"");if(label===null)return;body.label=label;}
 
   if(action==="delete"&&!confirm("确定删除此账号凭证？此操作不可撤销。"))return;
+  if(action==="token-refresh")accountRefreshPending.add(index);
   busy(btn,true);
   try{
     let d;
@@ -383,7 +384,7 @@ async function accountAction(action,index,btn){
       authRefreshToast(d,synced);
     }else{toast("账号操作已完成");await load(false);}
   }
-  catch(e){toast("账号操作失败","err",e.message)}finally{busy(btn,false)}
+  catch(e){toast("账号操作失败","err",e.message)}finally{accountRefreshPending.delete(index);busy(btn,false);if(action==="token-refresh")renderAccounts()}
 }
 
 function applyCreditsResult(a, res){
@@ -514,20 +515,35 @@ async function api(path, opts={}){
     throw new Error(`JSON 解析失败 (${r.status}): ${text.slice(0,100)}`);
   }
 }
+function normalizeLoginLink(value){return String(value).replace(/&amp;/g,"&");}
 let loginStatusTimer=null, panelLoginState=sessionStorage.getItem(providerName+"-login-state")||"", panelLoginPolling=false;
 async function startPanelLogin(variant,btn){
   document.getElementById("loginHelp").open=true;
   busy(btn,true);
+  // Keep the popup inside the original user gesture; opening after await is
+  // commonly blocked. Sever opener immediately, before navigating cross-origin.
+  let popup=null;
+  try{
+    popup=window.open("about:blank","_blank");
+    if(popup){popup.opener=null;if(popup.document&&popup.document.body){popup.document.title="正在取得授权地址";popup.document.body.textContent="正在取得授权地址，请稍候…";}}
+  }catch(_){}
+  const closeBlank=()=>{try{if(popup&&!popup.closed&&popup.location.href==="about:blank")popup.close();}catch(_){}};
   try{
     const d=await api("/login/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({variant})});
     if(d.error||!d.state||!d.url)throw Error(d.error||"登录启动响应不完整");
-    const url=new URL(d.url);if(!["https:","http:"].includes(url.protocol))throw Error("授权地址协议无效");
+    const url=new URL(normalizeLoginLink(d.url));if(!["https:","http:"].includes(url.protocol))throw Error("授权地址协议无效");
     panelLoginState=d.state;sessionStorage.setItem(providerName+"-login-state",d.state);
-    document.getElementById("loginLaunch").innerHTML=`<a href="${escAttr(url.href)}" target="_blank" rel="noopener noreferrer">打开本次授权页面</a>`;
-    window.open(url.href,"_blank","noopener,noreferrer");
-    toast("登录已发起","ok","完成授权后可粘贴完整 Trae 回调链接恢复");
+    const launch=document.getElementById("loginLaunch"),link=document.createElement("a");
+    link.href=url.href;link.textContent="打开本次授权页面";link.target="_blank";link.rel="noopener noreferrer";
+    launch.textContent="";launch.appendChild(link);
+    let opened=false;
+    try{if(popup&&!popup.closed){popup.location.replace(url.href);opened=true;}}catch(_){closeBlank();}
+    if(!opened){
+      const note=document.createElement("p");note.className="login-note";note.textContent="授权窗口未能自动打开，请点击上方链接继续授权。";launch.appendChild(note);
+    }
+    toast("登录已发起",opened?"ok":"warn",opened?"完成授权后可粘贴完整 Trae 回调链接恢复":"授权窗口未能自动打开，请点击「打开本次授权页面」；尚未完成登录");
     await refreshLoginStatus();
-  }catch(e){toast("登录启动失败","err",e.message)}finally{busy(btn,false)}
+  }catch(e){closeBlank();toast("登录启动失败","err",e.message)}finally{busy(btn,false)}
 }
 async function pollPanelLogin(){
   if(!panelLoginState||panelLoginPolling)return;
@@ -590,6 +606,12 @@ refreshLoginStatus();
 async function submitCallbackURL(btn){
   const raw=(document.getElementById("cbPaste").value||"").trim();
   if(!raw){toast("请先粘贴完整回调链接","warn");return}
+  try{
+    const url=new URL(normalizeLoginLink(raw));
+    if(!url.searchParams.get("authCodeInfo")&&(url.searchParams.has("client_id")||url.searchParams.has("code_challenge"))){
+      toast("这不是授权完成后的回调链接","warn","请先完成授权，再从授权完成页面复制完整回调链接（含 authCodeInfo）");return;
+    }
+  }catch(_){}
   busy(btn,true);
   try{
     /* Host resource routes are GET-only (ServeResourceHTTP rejects non-GET),
@@ -725,49 +747,6 @@ async function checkinAll(btn){
     await load(false);
   }catch(e){toast("批量签到失败","err",e.message)}finally{busy(btn,false)}
 }
-async function refreshCredits(idx, btn){
-  busy(btn,true);
-  try{
-    const d=await api(`/credits?auth_index=${encodeURIComponent(idx)}`);
-    const res=(d.results||[])[0]||{};
-    if(d.error||res.error){
-      toast("刷新失败","err",d.error||res.error||"未知错误");
-      busy(btn,false);
-      return;
-    }
-    const a=(lastAccounts||[]).find(x=>x.auth_index===idx);
-    if(a){
-      applyCreditsResult(a, res);
-      if(res.error) a.error=res.error; else a.error="";
-      updateOneCard(a);
-    }
-    // v0.12.28: toast 按用量模型措辞（速通次数/剩余积分/未知）。
-    const who=res.nickname||res.uid||idx;
-    let detail;
-    if(res.usage_model==="fast"&&res.remain_known){
-      const av=Number(res.total_remain)||0;
-      detail=who+" · 速通可用 "+(av<0?"无限次":av+" 次");
-    }else if(res.fast_request_per!=null&&Number(res.fast_request_per)>0){
-      // v0.12.29: Free/SOLO 的真实剩余维度（pay_status 快请求/月）。
-      detail=who+" · 快请求/月 "+res.fast_request_per;
-    }else if(res.usage_model==="basic"&&res.remain_known){
-      detail=who+" · 套餐 "+(res.total_remain!=null?res.total_remain:"?")+" · 已用 "+(res.used!=null?res.used:"未上报");
-    }else if(res.credits_pool_known){
-      // v0.12.34: 官方口径积分池。
-      detail=who+" · 积分池 "+(res.credits_pool_unlimited?"不限":(Number(res.credits_pool_remain)||0));
-    }else if(res.remain_known===false){
-      detail=who+" · 剩余未知（不猜测）";
-    }else{
-      detail=who+" · 套餐 "+(res.total_remain!=null?res.total_remain:"?");
-    }
-    if(res.checkin_credits!=null) detail+=" · 签到奖励 "+res.checkin_credits;
-    toast("积分已刷新","ok",detail);
-  }catch(e){
-    toast("刷新失败","err",e.message||String(e));
-  }finally{
-    busy(btn,false);
-  }
-}
 document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="Enter")saveKey()});
 /* ===== 模型禁用（v0.12.63）=====
    目录：GET /plugins/trae/models/groups（插件按 variant 聚合 model_cache
@@ -828,7 +807,7 @@ function exclusionMatches(id,patterns){
   const value=String(id).toLowerCase();
   return patterns.some(p=>new RegExp("^"+String(p).toLowerCase().split("*").map(x=>x.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")).join(".*")+"$").test(value));
 }
-function catalogRows(){
+function catalogRows(partition=true){
   const rows=new Map();
   for(const g of (modelGroupsData&&modelGroupsData.groups)||[]){
     for(const m of g.models||[]){
@@ -838,7 +817,8 @@ function catalogRows(){
     }
   }
   const rank=new Map(modelRowOrder.map((id,i)=>[id,i]));
-  return [...rows.values()].sort((a,b)=>(rank.get(a.id)??Infinity)-(rank.get(b.id)??Infinity)||a.id.localeCompare(b.id));
+  const ordered=[...rows.values()].sort((a,b)=>(rank.get(a.id)??Infinity)-(rank.get(b.id)??Infinity)||a.id.localeCompare(b.id));
+  return partition?[...ordered.filter(r=>!modelRowState(r).hidden),...ordered.filter(r=>modelRowState(r).hidden)]:ordered;
 }
 function modelContextLabel(value){
   const n=Number(value);
@@ -875,10 +855,15 @@ function modelChannelCell(realm,m){
   const positive=values=>[...new Set(values.map(Number).filter(n=>Number.isFinite(n)&&n>0))].sort((a,b)=>a-b);
   const effective=positive(Array.isArray(m.context_lengths)&&m.context_lengths.length?m.context_lengths:[m.context_length]);
   const references=facts.flatMap(f=>Object.values(f.contexts||{})).concat(catalog.flatMap(c=>[...Object.values(c.contexts||{}),...Object.values(c.context_options||{}).flat()]));
-  const contexts=positive([...effective,...references]),declared=Number(m.context_length);
-  // Reference catalog tiers are not mode switches. Only a single effective
-  // CPA declaration may be emphasized; never choose among account differences.
-  const ctx=contexts.length?contexts.map(n=>`<span${effective.length===1&&n===declared?' class="ctx-default"':''}>${esc(modelContextLabel(n))}</span>`).join(' / '):'未上报';
+  const contexts=positive([...effective,...references]);
+  // Only source-labelled tiers describe ordinary/extended capability. A current
+  // CPA declaration or an observed maximum is not evidence of an official default.
+  const tierSources=[...facts,...catalog];
+  const tierValues=key=>positive(tierSources.flatMap(f=>[f.contexts&&f.contexts[key],...(f.context_options&&f.context_options[key]||[])]));
+  const ordinary=tierValues('dev'),extended=tierValues('max');
+  const labelled=new Set([...ordinary,...extended]);
+  const tiers=[...ordinary.map(n=>'普通 '+modelContextLabel(n)),...extended.map(n=>'扩展 '+modelContextLabel(n)),...contexts.filter(n=>!labelled.has(n)).map(modelContextLabel)];
+  const ctx=tiers.length?tiers.map(label=>`<span>${esc(label)}</span>`).join(' / '):'未上报';
   const explicitThinking=(typeof m.thinking==='boolean'||typeof m.thinking==='string'&&m.thinking!=='')&&m.thinking_state!=='unknown'&&m.thinking_state!=='different';
   const thoughts=[...new Set([...(Array.isArray(m.thinking_options)?m.thinking_options:[]),...(explicitThinking?[m.thinking]:[])].filter(v=>typeof v==='boolean'||typeof v==='string'))];
   const referenceThinking=[...new Set(catalog.flatMap(c=>Array.isArray(c.thinking_options)?c.thinking_options:[]).filter(v=>typeof v==='string'))];
@@ -886,25 +871,31 @@ function modelChannelCell(realm,m){
   const evidence=facts.map(f=>f.context_evidence).filter(e=>e&&['verified_input','upstream_usage_and_markers'].includes(e.kind)&&Number(e.observed_input_tokens)>0);
 
   const detail=m.id+' · 倍率 '+modelMultiplierLabel(m)+' · '+(m.credentials||0)+'/'+(m.total||0)+' 凭证记录'+
-    (contexts.length?' · 目录档位（上游参考）；加粗为当前CPA声明，非模式开关':'')+
+    (contexts.length?' · 目录档位（上游参考）；非官方默认，非模式开关':'')+
     (effective.length?' · CPA声明 '+effective.map(modelContextLabel).join(' / ')+(effective.length>1?'（账号差异）':''):'')+
     (evidence.length?' · 已实测输入 '+Math.max(...evidence.map(e=>Number(e.observed_input_tokens)))+' tokens':'')+
     (referenceThinking.length?' · 上游思考参考 '+referenceThinking.join(' / ')+'（非当前默认）':'')+
     (m.fetched_at?' · 快照 '+promoTime(m.fetched_at,''):'');
   return `<div class="realm-cell" title="${escAttr(detail)}"><div class="realm-facts"><span>倍率 ${esc(modelMultiplierLabel(m))}</span><span>思考 ${thinking}</span><span>上下文 ${ctx}</span></div></div>`;
 }
-function modelChannelAction(realm,m){
-  if(!m)return '';
-  const locked=exclusionMatches(m.id,[...globalExclSet()]),hidden=locked||exclusionMatches(m.id,realmExclList(realm));
-  const label={cn:'CN',solo:'SOLO',intl:'Intl'}[realm];
-  return `<button type="button" class="ftag${hidden?' hidden-model':''}" data-model-realm="${realm}" data-model-toggle="${escAttr(m.id)}"${locked||modelBusy||!modelStateValid?' disabled':''} title="${escAttr(m.id)}${locked?' · 全局锁定':''}">${label} ${locked?'锁定':hidden?'恢复':'隐藏'}</button>`;
+function modelRowState(row){
+  const channels=Object.entries(row.channels).map(([realm,m])=>{
+    const locked=exclusionMatches(m.id,[...globalExclSet()]);
+    return {realm,id:m.id,locked,hidden:locked||exclusionMatches(m.id,realmExclList(realm))};
+  });
+  return {channels,hidden:channels.length>0&&channels.every(c=>c.hidden),locked:channels.length>0&&channels.every(c=>c.locked),partial:channels.some(c=>c.hidden)&&channels.some(c=>!c.hidden)};
+}
+function modelRowAction(row){
+  const state=modelRowState(row),title=state.locked?'所有渠道均被全局规则锁定；请在宿主页管理':state.partial?'部分渠道已隐藏；隐藏其余可见渠道':state.hidden?'恢复所有非全局锁定渠道；不会修改全局或渠道通配规则':'隐藏此模型的所有现有渠道';
+  const scope=state.channels.map(c=>({cn:'CN',solo:'SOLO',intl:'Intl'}[c.realm]||c.realm)+' '+c.id+(c.locked?'（全局锁定）':c.hidden?'（已隐藏）':'（可见）')).join('；');
+  return `<button type="button" class="ftag${state.hidden?' hidden-model':''}" data-model-toggle="${escAttr(row.id)}"${state.locked||modelBusy||!modelStateValid?' disabled':''} title="${escAttr(title+' · '+scope)}">${state.hidden?'恢复':'隐藏'}</button>`;
 }
 function renderModelGroups(){
   const box=document.getElementById("modelGroupsBox"),rows=catalogRows();
   document.getElementById('modelRefreshBtn').disabled=modelBusy||modelLoading;
   box.setAttribute('aria-busy',String(modelBusy||modelLoading));
-  box.innerHTML=`<div class="model-table-wrap"><div class="model-table" role="table" aria-label="模型列表"><div class="model-head" role="row"><span>排序</span><span>模型 / 名字</span><span>CN</span><span>SOLO</span><span>Intl</span><span>操作</span></div><div class="model-rows">${rows.map((r,i)=>`<div class="model-row" role="row" data-model-id="${escAttr(r.id)}"><button type="button" class="drag-handle" draggable="${!modelBusy&&modelStateValid}" data-drag-index="${i}" aria-label="调整 ${escAttr(r.id)} 的排序" aria-keyshortcuts="ArrowUp ArrowDown" title="拖拽排序；方向键可调整"${modelBusy||!modelStateValid?' disabled':''}>⠿</button><div title="${escAttr(r.id)}"><div class="model-id">${esc(r.id)}</div>${r.name!==r.id?`<div class="model-name">${esc(r.name)}</div>`:''}</div>${['cn','solo','intl'].map(realm=>modelChannelCell(realm,r.channels[realm])).join('')}<div class="model-actions">${['cn','solo','intl'].map(realm=>modelChannelAction(realm,r.channels[realm])).join('')}</div></div>`).join('')||'<div class="loading">暂无已验证目录</div>'}</div></div></div>`;
-  box.querySelectorAll('[data-model-toggle]').forEach(btn=>btn.onclick=()=>modelToggle(btn.dataset.modelRealm,btn.dataset.modelToggle));
+  box.innerHTML=`<div class="model-table-wrap"><div class="model-table" role="table" aria-label="模型列表"><div class="model-head" role="row"><span>排序</span><span>模型 / 名字</span><span>CN</span><span>SOLO</span><span>Intl</span><span>操作</span></div><div class="model-rows">${rows.map((r,i)=>`<div class="model-row" role="row" data-model-id="${escAttr(r.id)}"><button type="button" class="drag-handle" draggable="${!modelBusy&&modelStateValid}" data-drag-index="${i}" aria-label="调整 ${escAttr(r.id)} 的排序" aria-keyshortcuts="ArrowUp ArrowDown" title="同一显示分区内拖拽排序；方向键可调整"${modelBusy||!modelStateValid?' disabled':''}>⠿</button><div title="${escAttr(r.id)}"><div class="model-id">${esc(r.id)}</div>${r.name!==r.id?`<div class="model-name">${esc(r.name)}</div>`:''}</div>${['cn','solo','intl'].map(realm=>modelChannelCell(realm,r.channels[realm])).join('')}<div class="model-actions">${modelRowAction(r)}</div></div>`).join('')||'<div class="loading">暂无已验证目录</div>'}</div></div></div>`;
+  box.querySelectorAll('[data-model-toggle]').forEach(btn=>btn.onclick=()=>modelToggle(btn.dataset.modelToggle));
   let drag=null;
   box.querySelectorAll('[data-model-id]').forEach(row=>{
     const handle=row.querySelector('[data-drag-index]');
@@ -912,21 +903,32 @@ function renderModelGroups(){
     handle.onkeydown=async ev=>{
       if(ev.key!=="ArrowUp"&&ev.key!=="ArrowDown")return;
       ev.preventDefault();const from=Number(handle.dataset.dragIndex),delta=ev.key==="ArrowUp"?-1:1,to=from+delta;
-      if(to<0||to>=rows.length)return;
+      if(to<0||to>=rows.length||modelRowState(rows[from]).hidden!==modelRowState(rows[to]).hidden)return;
       await modelMove(from,delta);const moved=box.querySelector(`[data-drag-index="${to}"]`);if(moved)moved.focus();
     };
     row.ondragover=ev=>ev.preventDefault();
-    row.ondrop=async ev=>{ev.preventDefault();if(modelBusy||!modelStateValid)return;const ids=catalogRows().map(x=>x.id),from=ids.indexOf(drag),to=ids.indexOf(row.dataset.modelId);if(from<0||to<0||from===to)return;ids.splice(to,0,ids.splice(from,1)[0]);modelRowOrder=ids;await modelOrderSave();};
+    row.ondrop=async ev=>{ev.preventDefault();const rows=catalogRows(),from=rows.findIndex(x=>x.id===drag),to=rows.findIndex(x=>x.id===row.dataset.modelId);await modelReorder(from,to);};
   });
 }
-async function modelMove(index,delta){
+async function modelMove(index,delta){return modelReorder(index,index+delta);}
+async function modelReorder(from,to){
   if(modelBusy||!modelStateValid)return;
-  const ids=catalogRows().map(x=>x.id),to=index+delta;if(to<0||to>=ids.length)return;
-  [ids[index],ids[to]]=[ids[to],ids[index]];modelRowOrder=ids;await modelOrderSave();
+  const rows=catalogRows();
+  if(from<0||to<0||from>=rows.length||to>=rows.length||from===to)return;
+  const hidden=modelRowState(rows[from]).hidden;
+  if(hidden!==modelRowState(rows[to]).hidden)return;
+  const partition=rows.filter(r=>modelRowState(r).hidden===hidden).map(r=>r.id);
+  const a=partition.indexOf(rows[from].id),b=partition.indexOf(rows[to].id);
+  partition.splice(b,0,partition.splice(a,1)[0]);
+  // Rewrite only this partition's slots in the canonical rank. The display-only
+  // hidden tail must never displace hidden IDs or overwrite their original rank.
+  const members=new Set(partition);let i=0;
+  modelRowOrder=catalogRows(false).map(r=>members.has(r.id)?partition[i++]:r.id);
+  await modelOrderSave();
 }
 async function modelOrderSave(){
   if(modelBusy||!modelStateValid)return;
-  const ids=catalogRows().map(x=>x.id);if(!ids.length)return;
+  const ids=catalogRows(false).map(x=>x.id);if(!ids.length)return;
   modelBusy=true;const epoch=++modelEpoch;modelStatus("正在保存排序并回读…");renderModelGroups();
   try{
     await hostAPI("/plugins/"+providerName+"/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_order:ids})});
@@ -974,9 +976,14 @@ async function modelGroupsRefresh(){
   if(modelBusy||modelLoading)return;
   if(await modelCtlLoad(true))toast("模型目录已刷新");
 }
-async function modelToggle(realm,id){
-  if(modelBusy||!modelStateValid||!['cn','solo','intl'].includes(realm)||exclusionMatches(id,[...globalExclSet()]))return;
-  modelEdits=new Map([[realm+"\n"+id,exclusionMatches(id,realmExclList(realm))]]);
+async function modelToggle(id){
+  if(modelBusy||!modelStateValid)return;
+  const row=catalogRows().find(r=>r.id===id);if(!row)return;
+  const state=modelRowState(row);if(state.locked)return;
+  // A partially hidden row means hide its remaining visible channels. Restoring
+  // an all-hidden row removes exact exclusions only, never broad wildcards.
+  const targets=state.channels;
+  modelEdits=new Map(targets.map(c=>[c.realm+"\n"+c.id,state.hidden]));
   await modelGroupsSave();
 }
 function exclusionPatch(existing,realm){
@@ -999,13 +1006,18 @@ async function modelGroupsSave(){
     const fresh=exclusionMap(await hostAPI("/oauth-excluded-models"));
     if(epoch!==modelEpoch)return;
     modelExclMap=fresh;modelEdits=edits;
-    for(const [key] of edits){if(exclusionMatches(key.split("\n")[1],[...globalExclSet()]))throw Error("模型已被全局锁定");}
-    const expected={};
+    // Re-evaluate locks against the fresh host source, not the rendered snapshot.
+    // A previously locked channel may now be writable; newly locked channels
+    // stay untouched while the remaining channels can still be restored.
+    for(const [key] of edits)if(exclusionMatches(key.split("\n")[1],[...globalExclSet()]))edits.delete(key);
+    if(!edits.size)throw Error("模型已被全局锁定");
+    const expected={},patches=[];
     for(const realm of ['cn','solo','intl']){
       if(![...edits.keys()].some(key=>key.startsWith(realm+"\n")))continue;
       const key='trae-'+realm,old=fresh[key]||[],next=exclusionPatch(old,realm);expected[key]=next;
-      if(JSON.stringify(next)!==JSON.stringify(old))await hostAPI('/oauth-excluded-models',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:key,models:next})});
+      if(JSON.stringify(next)!==JSON.stringify(old))patches.push({provider:key,models:next});
     }
+    for(const patch of patches)await hostAPI('/oauth-excluded-models',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
     const verified=exclusionMap(await hostAPI('/oauth-excluded-models'));
     if(epoch!==modelEpoch)return;
     for(const [key,list] of Object.entries(expected))if(JSON.stringify(normalizedExclusions(verified[key]||[]))!==JSON.stringify(normalizedExclusions(list)))throw Error("宿主隐藏设置回读不一致");
@@ -1071,32 +1083,43 @@ function groupedPromotions(data){
   const rank={active:0,upcoming:1,inactive:2,unknown:3,expired:4,ended:4};
   return [...groups.values()].sort((a,b)=>rank[a._state]-rank[b._state]);
 }
+function promoStatusLabel(item){
+ const state=item._state;if(state!=='unknown')return {active:'进行中',upcoming:'未开始',expired:'已结束',ended:'已结束',inactive:item.status_reason==='upstream_disabled'?'上游已停用':'时段外'}[state]||'条件未提供';
+ if(item.snapshot_stale===true||item.status_reason==='snapshot_stale')return '快照已过期';
+ if(item.next_change&&snapshotNow(promotionsData)>=promoTimestamp(item.next_change))return '时段已变化，需刷新';
+ const reasons={missing_timezone:'上游未提供时区',unsupported_timezone_or_weekdays:'时区或星期规则不明',unsupported_schedule:'时间规则不完整',invalid_bounds:'起止时间不完整',membership_not_confirmed:'会员资格未确认',rate_observation_crossed_boundary:'时段已变化，需刷新'};
+ if(reasons[item.status_reason])return reasons[item.status_reason];
+ if(item.kind==='member')return '会员资格未确认';
+ if((item.time_windows||[]).some(w=>!w.time_zone)&&!item.time_zone)return '上游未提供时区';
+ return '上游未提供适用条件';
+}
 function promoRow(item,zone){
-  const state=item._state,on=state==='active',label={active:'进行中',upcoming:'未开始',expired:'已结束',ended:'已结束',inactive:'时段外',unknown:'待核实'}[state];
-  const models=Array.isArray(item.models)?item.models.join(' / '):item.model_id||item.model||'';
-  const title=({current:'当前优惠',promotion:'限时活动',discount:'折扣活动'})[item.title||item.kind]||item.title||item.kind||'上游活动';
-  const price=typeof item.multiplier==='number'?item.multiplier+'×':typeof item.factor==='number'?'折扣系数 '+item.factor:typeof item.discount_percent==='number'?item.discount_percent+'%':'倍率未上报';
-  const windowItems=Array.isArray(item.time_windows)?item.time_windows:[];
-  const windowZones=[...new Set(windowItems.map(w=>w.time_zone).filter(Boolean))];
-  const timeZone=item.time_zone||zone||(windowZones.length===1?windowZones[0]:'');
-  const windows=windowItems.map(w=>promoWindow(w,timeZone)).join('；');
-  const range=[item.start_at?promoTime(item.start_at,timeZone)+' 起':'',item.end_at?promoTime(item.end_at,timeZone)+' 止':''].filter(Boolean).join(' → ');
-  const schedule=[windows,range,timeZone,item.next_change?'下次变化 '+promoTime(item.next_change,timeZone):''].filter(Boolean).join(' · ');
-  const scopes=[...item._scopes];
-  return `<div class="promo-row ${on?'on':'off'}"><span class="promo-badge${on?' on':''}">${esc(title)}</span><span class="promo-model" title="${escAttr(models)}">${esc(models||'范围未上报')}</span><span class="promo-price" title="${escAttr('快照时间 '+([...item._fetched].map(t=>promoTime(t,'')).join(' / ')||'未上报'))}">${esc(price)}${state==='unknown'?'（快照）':''}</span><span class="promo-realm" title="${escAttr(scopes.join(' / '))}">${esc(({cn:'CN',solo:'SOLO',intl:'Intl'})[item.realm]||item.realm||'范围待核实')}${scopes.length?' · '+scopes.length+' 个账号':''}</span><span class="promo-state${on?' on':''}">${label}${schedule?'<br>'+esc(schedule):''}</span></div>`;
+ const state=item._state,on=state==='active',label=promoStatusLabel(item);
+ const models=Array.isArray(item.models)?item.models.join(' / '):item.model_id||item.model||'';
+ const kind=item.kind==='current'&&item.discount_type?item.discount_type:item.title||item.kind;
+ const title=({current:'当前优惠',promotion:'限时活动',discount:'折扣活动',off_peak:'闲时折扣',subsidy:'平台补贴',member:'会员专享',limited:'限时优惠'})[kind]||item.title||kind||'上游活动';
+ const price=typeof item.multiplier==='number'?item.multiplier+'×':typeof item.factor==='number'?'折扣系数 '+item.factor:typeof item.discount_percent==='number'?item.discount_percent+'%':'倍率未上报';
+ const windowItems=Array.isArray(item.time_windows)?item.time_windows:[];
+ const windowZones=[...new Set(windowItems.map(w=>w.time_zone).filter(Boolean))];
+ const timeZone=item.time_zone||zone||(windowZones.length===1?windowZones[0]:'');
+ const windows=windowItems.map(w=>promoWindow(w,timeZone)).join('；');
+ const range=[item.start_at?promoTime(item.start_at,timeZone)+' 起':'',item.end_at?promoTime(item.end_at,timeZone)+' 止':''].filter(Boolean).join(' → ');
+ const schedule=[windows,range,timeZone,item.next_change?'下次变化 '+promoTime(item.next_change,timeZone):''].filter(Boolean).join(' · ');
+ const scopes=[...item._scopes];
+ return `<div class="promo-row ${on?'on':'off'}"><span class="promo-badge${on?' on':''}">${esc(title)}</span><span class="promo-model" title="${escAttr(models)}">${esc(models||'范围未上报')}</span><span class="promo-price" title="${escAttr('快照时间 '+([...item._fetched].map(t=>promoTime(t,'')).join(' / ')||'未上报'))}">${esc(price)}${state==='unknown'?'（参考）':''}</span><span class="promo-realm" title="${escAttr(scopes.join(' / '))}">${esc(({cn:'CN',solo:'SOLO',intl:'Intl'})[item.realm]||item.realm||'范围未上报')}${scopes.length>1?' · '+scopes.length+' 个账号':''}</span><span class="promo-state${on?' on':''}">${esc(label)}${schedule?'<br>'+esc(schedule):''}</span></div>`;
 }
 function renderPromotions(data){
-  if(data!==promotionsData)promotionsReceivedAt=Date.now();
-  promotionsData=data||{status:'unknown',items:[]};data=promotionsData;
-  const items=groupedPromotions(data),active=items.filter(i=>i._state==='active').length,known=data.status==='known';
-  const inactive=items.filter(i=>i._state==='upcoming'||i._state==='inactive').length,unknown=items.filter(i=>i._state==='unknown').length;
-  const count=document.getElementById('promoCount');count.textContent=known||items.length?active+' 个进行中 · '+inactive+' 未生效 · '+unknown+' 待核实'+(!known?' · 覆盖待核实':''):'待核实';count.className='promo-live'+(active?'':' zero');
-  const zone=data.time_zone||data.timezone||'';
-  const fetched=(data.items||[]).map(item=>promoTimestamp(item.fetched_at)).filter(Number.isFinite).sort((a,b)=>a-b);
-  const snapshot=fetched.length?'快照时间 '+promoTime(fetched[0]/1000,zone)+(fetched.at(-1)!==fetched[0]?' — '+promoTime(fetched.at(-1)/1000,zone):''):'快照时间未上报';
-  document.getElementById('promoMeta').textContent=snapshot+(data.server_time?' · 读取时间 '+promoTime(data.server_time,zone):'')+(zone?' · '+zone:'')+' · '+(known?'活动快照':items.length?'活动快照 · 覆盖待核实':'活动信息未上报');
-  const rows=items.map(item=>promoRow(item,zone));
-  document.getElementById('promoList').innerHTML=rows.slice(0,6).join('')+(rows.length>6?`<details id="promoMore"><summary class="promo-meta">展开其余 ${rows.length-6} 项</summary><div class="promo-list">${rows.slice(6).join('')}</div></details>`:'')||(known?'<div class="promo-meta">当前快照未列出活动</div>':'<div class="promo-meta">待上游提供可核实信息</div>');
+ if(data!==promotionsData)promotionsReceivedAt=Date.now();
+ promotionsData=data||{status:'unknown',items:[]};data=promotionsData;
+ const items=groupedPromotions(data),active=items.filter(i=>i._state==='active').length,known=data.status==='known';
+ const inactive=items.filter(i=>i._state==='upcoming'||i._state==='inactive').length,unknown=items.filter(i=>i._state==='unknown').length;
+ const count=document.getElementById('promoCount');count.textContent=items.length?active+' 进行中'+(inactive?' · '+inactive+' 未生效':'')+(unknown?' · '+unknown+' 条件信息不完整':''):(known?'暂无活动':'暂无活动数据');count.className='promo-live'+(active?'':' zero');
+ const zone=data.time_zone||data.timezone||'';
+ const fetched=(data.items||[]).map(item=>promoTimestamp(item.fetched_at)).filter(Number.isFinite).sort((a,b)=>a-b);
+ const snapshot=fetched.length?'更新 '+promoTime(fetched[0]/1000,zone)+(fetched.at(-1)!==fetched[0]?' — '+promoTime(fetched.at(-1)/1000,zone):''):'更新时间未上报';
+ document.getElementById('promoMeta').textContent=snapshot+(zone?' · '+zone:'');
+ const rows=items.map(item=>promoRow(item,zone));
+ document.getElementById('promoList').innerHTML=rows.slice(0,6).join('')+(rows.length>6?`<details id="promoMore"><summary class="promo-meta">展开其余 ${rows.length-6} 项</summary><div class="promo-list">${rows.slice(6).join('')}</div></details>`:'')||(known?'<div class="promo-meta">当前快照未列出活动</div>':'<div class="promo-meta">尚未取得活动信息，可手动刷新目录</div>');
 }
 // Local presentation only. Scheduled upstream discovery belongs to the backend;
 // neither page startup, unknown metadata, visibility nor a time boundary fetches it.
