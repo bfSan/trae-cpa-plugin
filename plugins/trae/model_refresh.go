@@ -15,21 +15,19 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// Schema 3 changes only CN/Solo effective context selection. Intl retains its
-// existing schema and refresh cadence; a context policy upgrade is not a reason
-// to probe an unrelated realm.
+// Schema 3 covers maximum context policy and Intl grouped-model envelopes.
 const modelCacheSchemaVersion = 3
 
 func modelCacheSchemaForRealm(realm string) int {
-	if realm == variantIntl {
-		return 2
-	}
 	return modelCacheSchemaVersion
 }
 
 // An old-policy failed/partial/in-progress attempt still owns its daily retry
 // budget. Successful schema-2 CN/Solo caches refresh once for the new policy.
 func modelRefreshStateCurrent(state modelRefreshState, realm string) bool {
+	if realm == variantIntl && state.Realm == realm && state.SchemaVersion == 2 && state.Status == "failed" && strings.HasPrefix(state.Error, "models parse: json: cannot unmarshal object") {
+		return false
+	}
 	return state.Realm == realm && (state.SchemaVersion == modelCacheSchemaForRealm(realm) ||
 		(state.SchemaVersion == 2 && (state.Status == "failed" || state.Status == "partial" || state.Status == "in_progress")))
 }

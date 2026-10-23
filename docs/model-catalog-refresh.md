@@ -122,3 +122,19 @@ CN/Solo目录schema升级为3，旧成功快照重新读取一次；失败/parti
 20403（设备不匹配）加入安全错误码白名单，其他任意上游文本仍不回显。面板正确识别Authorization callback received为“已收到待确认”，不再弹出误导性红色失败toast；真正交换失败仍明确显示。
 
 离线mock覆盖普通/USTTP、URL到保存全流程身份一致、重启不换身份、两个新任务身份独立、重复完成仅一次POST。没有用真实用户授权码重放验证；实际成功登录仍需用户发起新的授权。
+
+
+## 0.13.6：Intl 分组目录兼容
+
+现场刷新报 `models parse: json: cannot unmarshal object ... into []struct{Name string}`。只读核对已保存 Intl 凭证的真实响应：HTTP 200、业务码 0，模型位于 `data.list[].models[]`（当前返回 6 个），而旧解析器只接受 `data[]`。这属于上游返回结构变化，不是登录或额度故障，凭证刷新本身已成功。
+
+现在同时接受两种明确形状：
+
+- 旧式 `data: [{name}]`；
+- 新式 `data.list: [{function, models:[{name, context_window_tokens, max_mode, ...}]}]`，按组拼接后去重。
+
+不递归探索任意对象，只读取上述字段；业务码非 0 仍在形状解析之前拒绝，避免把错误响应当成模型；限制响应 1 MiB、组数 128、模型数 4096、名称长度与换行字符，超限或结构未知直接报错而不是返回部分列表。
+
+对之前已记录 `models parse: json: cannot unmarshal object` 的失败状态允许一次立即重试，避免被旧版 24 小时退避拖住；其他失败仍按原节流保留旧快照。目录 schema 统一为 3，`data.list[].models[].context_window_tokens.max` 与前节最大窗口策略一致，未改变模型授权范围。
+
+本次未使用真实聊天、签到或重新登录，仅用现有凭证做只读目录查询。

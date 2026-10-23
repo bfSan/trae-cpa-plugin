@@ -711,36 +711,17 @@ func (c *Client) FetchModels(a *Auth) ([]string, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
-		return nil, fmt.Errorf("models read: %w", err)
+		return nil, fmt.Errorf("models response incomplete")
+	}
+	if len(body) > 1<<20 {
+		return nil, fmt.Errorf("models response exceeds size limit")
 	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("models upstream %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
-	var env struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    []struct {
-			Name string `json:"name"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, fmt.Errorf("models parse: %w", err)
-	}
-	if env.Code != 0 {
-		return nil, fmt.Errorf("models api code %d: %s", env.Code, truncate(strings.TrimSpace(env.Message), 120))
-	}
-	out := make([]string, 0, len(env.Data))
-	for _, m := range env.Data {
-		if m.Name != "" {
-			out = append(out, m.Name)
-		}
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("models api returned empty list")
-	}
-	return out, nil
+	return parseModelsCatalog(body)
 }
 
 // Helpers

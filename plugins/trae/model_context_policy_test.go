@@ -20,7 +20,7 @@ func TestContextPolicySchemaMigrationRespectsRealmAndRetryBudget(t *testing.T) {
 	}{
 		{"cn updated migrates immediately", "cn", "updated", time.Hour, true},
 		{"solo updated migrates immediately", "solo", "updated", time.Hour, true},
-		{"intl does not migrate", "intl", "updated", time.Hour, false},
+		{"intl migrates once for grouped catalog decoder", "intl", "updated", time.Hour, true},
 		{"failed attempt throttles migration", "cn", "failed", time.Hour, false},
 		{"partial attempt throttles migration", "cn", "partial", time.Hour, false},
 		{"checkpoint throttles migration after restart", "cn", "in_progress", time.Hour, false},
