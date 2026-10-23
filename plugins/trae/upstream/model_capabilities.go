@@ -30,6 +30,45 @@ type ModelCapability struct {
 	ThinkingDefault   string             `json:"thinking_default,omitempty"`
 }
 
+// DeclaredMaxContext returns the largest explicitly supported max tier. A missing
+// max_mode is not a denial; false is. Dev/newversion, prompt and output limits
+// are deliberately not candidates. This is a catalog claim, not a test receipt.
+func (c ModelCapability) DeclaredMaxContext() int64 {
+	if c.MaxMode != nil && !*c.MaxMode {
+		return 0
+	}
+	var largest int64
+	consider := func(n int64) {
+		if n > largest && n <= 100000000 {
+			largest = n
+		}
+	}
+	consider(c.Contexts["max"])
+	for _, n := range c.ContextOptions["max"] {
+		consider(n)
+	}
+	return largest
+}
+
+// applyDeclaredModelContexts only consumes the current account's primary rows
+// and exact-ID auxiliary intersections assembled by enrichCapabilities. It never
+// creates an entitlement, switches a chat lane, or changes an output budget.
+func applyDeclaredModelContexts(a *auth.Auth, models []ModelInfo) {
+	if a == nil || (a.Variant != "" && !strings.EqualFold(a.Variant, "cn") && !strings.EqualFold(a.Variant, "solo")) {
+		return
+	}
+	for i := range models {
+		for _, capability := range models[i].Facts.CapabilityCatalog {
+			if capability.SourceFunction != FunctionFor(a.Variant) && capability.SourceFunction != "solo_agent" {
+				continue
+			}
+			if n := capability.DeclaredMaxContext(); n > models[i].ContextWindow {
+				models[i].ContextWindow = n
+			}
+		}
+	}
+}
+
 // ContextEvidence belongs only to the credential storing it. DeclaredContext
 // remains a catalog declaration; ObservedInputTokens is the tested lower bound.
 type ContextEvidence struct {

@@ -32,6 +32,11 @@ func modelEvidenceScope(a *auth.Auth) string {
 }
 func applyModelContextEvidence(a *auth.Auth, raw []byte, dynamic []upstream.ModelInfo) []upstream.ModelInfo {
 	out := append([]upstream.ModelInfo(nil), dynamic...)
+	// Only an independently validated credential-local receipt may set evidence.
+	// Effective windows are already selected from this account's live catalogs.
+	for i := range out {
+		out[i].Facts.ContextEvidence = nil
+	}
 	if a == nil || a.UID == "" {
 		return out
 	}
@@ -61,7 +66,7 @@ func applyModelContextEvidence(a *auth.Auth, raw []byte, dynamic []upstream.Mode
 		if err != nil || observed.After(now.Add(time.Minute)) {
 			continue
 		}
-		if e.DeclaredContext <= m.ContextWindow || e.DeclaredContext > 10000000 || e.ObservedInputTokens <= m.ContextWindow || e.ObservedInputTokens > e.DeclaredContext || e.ObservedInputTokens < e.DeclaredContext*9/10 {
+		if e.DeclaredContext <= 0 || e.DeclaredContext > 100000000 || e.ObservedInputTokens <= 0 || e.ObservedInputTokens > e.DeclaredContext || e.ObservedInputTokens < e.DeclaredContext*9/10 {
 			continue
 		}
 		if e.EvidenceID == "" || len(e.EvidenceID) > 128 {
@@ -87,7 +92,6 @@ func applyModelContextEvidence(a *auth.Auth, raw []byte, dynamic []upstream.Mode
 		if !declared {
 			continue
 		}
-		m.ContextWindow = e.DeclaredContext
 		publicEvidence := e.ContextEvidence
 		m.Facts.ContextEvidence = &publicEvidence
 	}

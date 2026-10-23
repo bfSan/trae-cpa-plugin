@@ -295,7 +295,7 @@ func authCodeExchangeURLsCN(loginHost string) []string {
 
 func safeLoginCode(code string) string {
 	switch code {
-	case "20401", "20405", "10101", "1001":
+	case "20401", "20403", "20405", "10101", "1001":
 		return " upstream code=" + code
 	default:
 		return ""

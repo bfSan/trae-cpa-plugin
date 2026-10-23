@@ -15,7 +15,25 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const modelCacheSchemaVersion = 2
+// Schema 3 changes only CN/Solo effective context selection. Intl retains its
+// existing schema and refresh cadence; a context policy upgrade is not a reason
+// to probe an unrelated realm.
+const modelCacheSchemaVersion = 3
+
+func modelCacheSchemaForRealm(realm string) int {
+	if realm == variantIntl {
+		return 2
+	}
+	return modelCacheSchemaVersion
+}
+
+// An old-policy failed/partial/in-progress attempt still owns its daily retry
+// budget. Successful schema-2 CN/Solo caches refresh once for the new policy.
+func modelRefreshStateCurrent(state modelRefreshState, realm string) bool {
+	return state.Realm == realm && (state.SchemaVersion == modelCacheSchemaForRealm(realm) ||
+		(state.SchemaVersion == 2 && (state.Status == "failed" || state.Status == "partial" || state.Status == "in_progress")))
+}
+
 const modelRefreshInterval = 24 * time.Hour
 const modelRefreshStateDocKey = "model_refresh_state"
 
@@ -60,12 +78,12 @@ func readModelRefreshState(raw []byte) modelRefreshState {
 }
 func modelRefreshDue(raw []byte, realm string, now time.Time) bool {
 	state := readModelRefreshState(raw)
-	if state.Realm == realm && state.SchemaVersion == modelCacheSchemaVersion {
+	if modelRefreshStateCurrent(state, realm) {
 		if last, err := time.Parse(time.RFC3339Nano, state.LastAttemptAt); err == nil {
 			return last.After(now.Add(5*time.Minute)) || !now.Before(last.Add(modelRefreshInterval))
 		}
 	}
-	if cache := readModelCacheDoc(raw); cache != nil && cache.Realm == realm && cache.SchemaVersion == modelCacheSchemaVersion {
+	if cache := readModelCacheDoc(raw); cache != nil && cache.Realm == realm && cache.SchemaVersion == modelCacheSchemaForRealm(realm) {
 		if last, err := time.Parse(time.RFC3339Nano, cache.FetchedAt); err == nil {
 			return last.After(now.Add(5*time.Minute)) || !now.Before(last.Add(modelRefreshInterval))
 		}
@@ -81,7 +99,7 @@ func modelResultForDoc(raw []byte, realm, status string) modelRefreshResult {
 		}
 	}
 	st := readModelRefreshState(raw)
-	if st.Realm == realm && st.SchemaVersion == modelCacheSchemaVersion {
+	if modelRefreshStateCurrent(st, realm) {
 		if at, err := time.Parse(time.RFC3339Nano, st.LastAttemptAt); err == nil {
 			r.NextRefreshAt = at.Add(modelRefreshInterval).UTC().Format(time.RFC3339Nano)
 		}
@@ -210,7 +228,7 @@ func performAccountModelRefresh(index string, force, wait bool, flight *modelRef
 		unlock()
 		return result
 	}
-	state := modelRefreshState{SchemaVersion: modelCacheSchemaVersion, Realm: before.Auth.Variant, LastAttemptAt: now.Format(time.RFC3339Nano), Status: "in_progress"}
+	state := modelRefreshState{SchemaVersion: modelCacheSchemaForRealm(before.Auth.Variant), Realm: before.Auth.Variant, LastAttemptAt: now.Format(time.RFC3339Nano), Status: "in_progress"}
 	// Checkpoint metadata BEFORE network: a restart cannot cause minute retries.
 	checkpoint, err := mergeModelRefreshState(before.Raw, state)
 	if err == nil {
@@ -257,7 +275,7 @@ func performAccountModelRefresh(index string, force, wait bool, flight *modelRef
 	}
 	merged, mergeErr := mergeModelRefreshState(current.Raw, state)
 	if mergeErr == nil && err == nil {
-		merged, mergeErr = mergeModelCacheIntoDoc(merged, &persistedModelCache{SchemaVersion: modelCacheSchemaVersion, Realm: before.Auth.Variant, FetchedAt: now.Format(time.RFC3339Nano), Models: models, Facts: facts})
+		merged, mergeErr = mergeModelCacheIntoDoc(merged, &persistedModelCache{SchemaVersion: modelCacheSchemaForRealm(before.Auth.Variant), Realm: before.Auth.Variant, FetchedAt: now.Format(time.RFC3339Nano), Models: models, Facts: facts})
 	}
 	if mergeErr != nil {
 		result.Status, result.Error = "failed", mergeErr.Error()

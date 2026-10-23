@@ -72,8 +72,9 @@ func TestResourceCallbackAppliesDerivedIdentityCN(t *testing.T) {
 	wantDerivedCN(t, lc, variantCN, "1237380756941412", "resource-route cn")
 }
 
-// TestResourceCallbackAppliesDerivedIdentityIntl: the intl flow's swap.
-func TestResourceCallbackAppliesDerivedIdentityIntl(t *testing.T) {
+// Intl auth codes are already bound to the authorization URL's device. The
+// userInfo echo identifies the account but must not replace that device.
+func TestResourceCallbackPreservesAuthorizationIdentityIntl(t *testing.T) {
 	state := "acct-intl-1"
 	lc := &intlloginCtx{
 		state:            state,
@@ -94,12 +95,11 @@ func TestResourceCallbackAppliesDerivedIdentityIntl(t *testing.T) {
 	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("callback body = %s", body)
 	}
-	id := deriveAccountDeviceIdentity(variantIntl, "1b78b3c2-62f0-42e5-84fe-51e3c55e4914")
-	if lc.deviceID != id.DeviceID || lc.machineID != id.MachineID {
-		t.Fatalf("intl ctx ids %s/%s, want derived %s/%s", lc.deviceID, lc.machineID, id.DeviceID, id.MachineID)
+	if lc.cbUID != "1b78b3c2-62f0-42e5-84fe-51e3c55e4914" || lc.authCode != "ac-intl-derived" {
+		t.Fatal("callback lost the account identity or authorization code")
 	}
-	if lc.devicePublicKey != id.DevicePublicKey || lc.devicePrivateKey != id.DevicePrivateKey {
-		t.Fatal("intl ctx key pair does not match the derived identity")
+	if lc.deviceID != "bootstrap-dev" || lc.machineID != "bootstrap-mach" || lc.devicePublicKey != "bootstrap-pub" || lc.devicePrivateKey != "bootstrap-priv" {
+		t.Fatal("Intl callback replaced the authorization identity")
 	}
 }
 

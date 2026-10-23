@@ -149,9 +149,9 @@ func acceptLoginCallbackIntl(lc *intlloginCtx, vals url.Values) (string, bool) {
 		lc.loginHost = p.loginHost
 	}
 	lc.cbUID, lc.cbNickname = p.identity.UID, p.identity.Nickname
-	if lc.cbUID != "" {
-		applyDerivedIdentityIntl(lc, lc.cbUID)
-	}
+	// The authorization page supplied the initial DeviceID to GetPCAuthCode.
+	// Keep that device, machine and key pair through exchange/save/refresh;
+	// userInfo identifies the account, it does not authorize rebinding its code.
 	intlCompleteLogin(lc)
 	if err := checkpointIntl(lc); err != nil {
 		return err.Error(), true

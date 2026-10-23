@@ -1,4 +1,6 @@
-# 0.13.2：每日模型目录与只读上下文能力
+# 每日模型目录与只读上下文能力
+
+> 当前策略以本文最后的 **0.13.5** 节为准。早期“仅实测模型扩大窗口”的0.13.2策略已经被账号目录最大声明策略替代；实测事实仍独立保留。
 
 ## 用户确认的边界
 
@@ -94,3 +96,29 @@ Intl 授权后未出现在列表的现场状态是回调已收到、exchange_sta
 交换失败持久化只含允许的 category/http_status/biz_code，不存上游错误文本、URL 或请求参数。终止失败返回 restart_required=true、pending=false；已有 token/result 的任务仍可继续保存。接到回调的页面不再提前声称登录完成。授权码是一次性的，不能因失败、404或重启不确定状态而自动再次 POST。
 
 此次修复不等于用户原任务已恢复或 Intl 账号已保存。旧任务无可恢复 token 时，需要用户新授权；下一次失败会留下脱敏可追查状态。本版没有代用户发起或完成真实登录。
+
+
+## 0.13.5：最大声明实际生效与 Intl 设备绑定
+
+### 上下文：修正注册政策，而不只改高亮
+
+此前只对带实测receipt的Deepseek扩大上下文，导致其他模型虽然已读到max=1M，实际仍注册200K/256K。这不符合用户希望按已知能力生效的要求。现在，同账号同次发现中，仅对主调用列表中精确ID匹配的模型，采用当前来源明确声明的合法最大窗口；该来源max_mode=false则不采用其max。缺max不猜，数组取合法最大值，不硬编码1M，也不增加只有辅助来源才授权的模型。
+
+实际注册、持久化model_cache.models及管理列表的context_length一致提升；原始facts.context/contexts.dev和capability_catalog保留。实测记录只附加到真正验证过的账号/模型，目录1M不冒充逐模型长输入实测。没有改变chat function、Max策略或输出max_tokens。
+
+CN/Solo目录schema升级为3，旧成功快照重新读取一次；失败/partial/in_progress仍遵循24小时节流，失败保留旧快照。Intl维持schema2，不借用CN能力。
+
+### Intl：授权设备与交换设备保持一致
+
+确认的协议差异：旧Intl start在授权URL使用安装身份，浏览器GetPCAuthCode将该DeviceID连同ClientID/PKCE提交；收到callback UID后，本地却把device/machine/公私钥切换成UID派生身份，再进行ExchangeToken。两个现场失败记录的脱敏比较均显示PKCE自洽、回调后身份是UID派生且不同于bootstrap、HTTP401、没有token检查点。该变化是401的高置信原因；由于旧版本没有保留具体业务码，不能宣称现场已证实20403。
+
+新Intl授权在发起时创建独立设备身份，并贯穿URL、callback、pending持久化/恢复、交换及保存。不同授权任务不共用安装bootstrap；callback不再换身份。CN现有行为不改，旧授权码不重放。**每次新的Intl授权可能新增上游设备记录；已有凭证的正常refresh继续复用保存身份，不会随刷新创建新设备。**
+
+参考来源：
+- [cockpit-tools auth-code ExchangeToken请求](https://github.com/jlcodes99/cockpit-tools/blob/main/src-tauri/src/modules/trae_oauth.rs#L2253-L2289)：ClientID/AuthCode/CodeVerifier/DeviceInfo/IDEVersion；没有需要新增的DeviceProof、ClientSecret或req_source。
+- [auth-code区域端点](https://github.com/jlcodes99/cockpit-tools/blob/main/src-tauri/src/modules/trae_oauth.rs#L727-L747)：普通Intl为SG，USTTP为US；不是按callback业务host选路。抓取的固定[源码blob](https://api.github.com/repos/jlcodes99/cockpit-tools/git/blobs/f34cf902bfc122c38d4bc056f333b09dada95d14)。
+- [Trae官网授权页面脚本](https://lf16-web-neutral.traecdn.ai/obj/trae-ai-static/trae_website/static/js/async/6597.d2fb2c9ae3.js)：读取URL device_id并传给TraeGetPCAuthCode。
+
+20403（设备不匹配）加入安全错误码白名单，其他任意上游文本仍不回显。面板正确识别Authorization callback received为“已收到待确认”，不再弹出误导性红色失败toast；真正交换失败仍明确显示。
+
+离线mock覆盖普通/USTTP、URL到保存全流程身份一致、重启不换身份、两个新任务身份独立、重复完成仅一次POST。没有用真实用户授权码重放验证；实际成功登录仍需用户发起新的授权。

@@ -32,8 +32,8 @@ func TestCapabilityCatalogEnrichesWithoutExpandingAuthorization(t *testing.T) {
 	if len(calls) != 2 || calls[0] != "solo_work_lite" || calls[1] != "solo_agent" {
 		t.Fatalf("requests=%v", calls)
 	}
-	if len(got) != 1 || got[0].ID != "m" || got[0].ContextWindow != 200000 {
-		t.Fatalf("auxiliary catalog expanded access/context: %+v", got)
+	if len(got) != 1 || got[0].ID != "m" || got[0].ContextWindow != 1000000 {
+		t.Fatalf("wrong authorized model or declared context: %+v", got)
 	}
 	facts := got[0].Facts
 	if len(facts.CapabilityCatalog) != 2 {

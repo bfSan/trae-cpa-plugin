@@ -497,11 +497,13 @@ func intlhandleStartLogin(request []byte) ([]byte, error) {
 	}
 
 	// Step 5: Build verification URI with PKCE.
-	// v0.12.76→v0.12.77: bootstrap device only — the URI is built before
-	// the account is known; the identity registered server-side is
-	// derived PER ACCOUNT at the callback (applyDerivedIdentityIntl,
-	// device_identity.go). See the main.go counterpart.
-	ident := ensureLoginDeviceIdentity(host.AuthDir, variantIntl)
+	// GetPCAuthCode binds DeviceID from this URL to the grant. The callback
+	// must not replace it with an identity derived from the newly learned UID.
+	// Mint a separate identity per Intl attempt rather than sharing the install
+	// bootstrap across accounts; retain it in pending state and the credential
+	// for stable refreshes. A new authorization can consume a new device slot.
+	// Do not persist this identity over the install's shared bootstrap file.
+	ident := mintDeviceIdentity(variantIntl)
 	deviceID, machineID := ident.DeviceID, ident.MachineID
 	verificationURI := intlbuildVerificationURI(loginHost, intlverificationURIParams{
 		AuthFrom:      oauthAuthFrom,

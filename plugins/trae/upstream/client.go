@@ -538,6 +538,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("models api returned no user-facing models")
 	}
 	c.enrichCapabilities(a, out)
+	applyDeclaredModelContexts(a, out)
 	return out, nil
 }
 

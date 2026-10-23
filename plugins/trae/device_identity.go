@@ -7,7 +7,14 @@
 // hopping between accounts — the exact fingerprint pattern upstream security
 // flags, and fundamentally the wrong model for a multi-account gateway.
 //
-// v0.12.77 model (this file):
+// Intl auth-code correction: the v0.12.77 callback-time identity substitution
+// below is retained for CN only. Intl now mints an independent identity before
+// building the authorization URL and keeps it through callback/exchange/save.
+// GetPCAuthCode receives that URL's DeviceID; changing it after grant issuance
+// breaks the binding contract. Each new Intl authorization can use a new device
+// slot; subsequent refreshes reuse the identity saved in its credential.
+//
+// v0.12.77 model (CN; historical rationale, not the Intl auth-code contract):
 //   - The identity that gets REGISTERED/BIND at ExchangeToken is DERIVED from
 //     the account: deriveAccountDeviceIdentity(variant, uid) is a pure
 //     function — deviceId (16 digits), machineId (UUID-v4 shaped) and the
@@ -193,8 +200,9 @@ func applyDerivedIdentityCN(lc *loginCtx, uid string) {
 		strings.TrimSpace(uid), id.Variant, id.DeviceID, id.MachineID)
 }
 
-// applyDerivedIdentityIntl is the intl-flow counterpart of
-// applyDerivedIdentityCN.
+// applyDerivedIdentityIntl is the legacy derivation helper. Do not call it
+// after an Intl authorization URL has been issued: the grant is bound to the
+// original device. Kept for derivation compatibility, not OAuth callbacks.
 func applyDerivedIdentityIntl(lc *intlloginCtx, uid string) {
 	if lc == nil {
 		return

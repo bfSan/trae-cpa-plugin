@@ -283,7 +283,7 @@ test('login builds DOM link from raw ampersands once without changing encoded ch
  const link=h.element('loginLaunch').querySelector('a'),expected=url.replace(/&amp;/g,'&');assert.equal(link.getAttribute('href'),expected);assert.equal(h.run('opened[0][0]'),'about:blank');assert.equal(h.run('navigated[0]'),expected);assert.equal(link.textContent,'打开本次授权页面');assert.equal(link.rel,'noopener noreferrer');assert.equal(h.run(`normalizeLoginLink('x&amp;amp;y%2526%26')`),'x&amp;y%2526%26');assert.equal(h.element('loginLaunch').querySelectorAll('script').length,0);
 });
 test('callback paste rejects authorization URL before network and preserves valid authcode bytes',async()=>{
- const h=harness();h.run(`var calls=[];fetch=async(url)=>{calls.push(url);return {ok:true,text:async()=>"回调已接收"}};load=async()=>{};`);
+ const h=harness();h.run(`var calls=[];fetch=async(url)=>{calls.push(url);return {ok:true,text:async()=>"回调已接收"}};load=async()=>{};refreshLoginStatus=async()=>{};`);
  for(const raw of ['https://example.test/authorize?client_id=x&code_challenge=abc','https://example.test/authorize?client_id=x&amp;code_challenge=abc','https://example.test/authorize?code_challenge=abc&authCodeInfo=']){h.element('cbPaste').value=raw;await h.run('submitCallbackURL(null)');assert.equal(h.run('calls.length'),0);assert.equal(h.element('cbPaste').value,raw);assert.match(h.run('messages.at(-1)[2]'),/完成授权.*复制完整回调链接/);}
  const raw='http://127.0.0.1:1234/authorize?authCodeInfo=a%2Bb%252F%26amp%3B&amp;signature=x%2526%3D';h.element('cbPaste').value=raw;await h.run('submitCallbackURL(null)');assert.equal(h.run('calls.length'),1);assert.equal(new URL(h.run('calls[0]'),'http://test').searchParams.get('cb_url'),raw);assert.equal(h.element('cbPaste').value,'');
 });
@@ -325,4 +325,10 @@ test('terminal exchange failure explains missing account and stops stale poll wi
  await h.run('refreshLoginStatus()');assert.match(h.element('loginStatus').textContent,/HTTP 404/);assert.match(h.element('loginStatus').textContent,/账号尚未保存/);assert.doesNotMatch(h.element('loginStatus').textContent,/登录等待中|登录已完成/);assert.equal(h.run('calls.length'),1);
  await h.run('refreshLoginStatus()');assert.equal(h.run('calls.length'),1);assert.equal(h.run('panelLoginState'),'test-state');
  assert.match(h.run(`loginExchangeFailureText({exchange_failure:{category:'outcome_uncertain'}})`),/结果不确定/);
+});
+
+test('callback-received HTML is not a false failure toast or saved-account claim',async()=>{
+ const h=harness();h.element('cbPaste').value='http://127.0.0.1:41890/authorize?authCodeInfo=mock-code';
+ h.run(`fetch=async()=>({ok:true,text:async()=>'<h1>Authorization callback received</h1><p>授权回调已收到，凭证交换和保存尚待完成</p>'});var reads=0;load=async()=>{};refreshLoginStatus=async()=>{reads++};`);
+ await h.run(`submitCallbackURL(document.createElement('button'))`);assert.equal(h.run('reads'),1);assert.equal(h.element('cbPaste').value,'');assert.match(h.run('messages[0][0]'),/授权回调已收到/);assert.equal(h.run(`messages.some(m=>/未完成登录|登录成功/.test(m[0]))`),false);
 });

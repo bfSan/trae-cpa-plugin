@@ -634,9 +634,10 @@ async function submitCallbackURL(btn){
        so the pasted URL rides as the encoded cb_url query param. */
     const r=await fetch("/v0/resource/plugins/"+providerName+"/oauth_submit?cb_url="+encodeURIComponent(raw),{credentials:'omit'});
     const text=await r.text();
-    if(r.ok&&/Login successful|登录成功|回调已接收/i.test(text)){
-      toast("回调已提交，登录完成中…","ok");
+    if(r.ok&&/Login successful|登录成功|回调已接收|Authorization callback received|授权回调已收到/i.test(text)){
+      toast("授权回调已收到","ok","正在核实凭证交换和保存结果，请以账号列表及下方状态为准");
       document.getElementById("cbPaste").value="";
+      await refreshLoginStatus();
       await load(false);
     }else{
       /* v0.12.17: keep the box content so the user can retry after re-login;
