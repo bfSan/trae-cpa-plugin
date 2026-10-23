@@ -157,7 +157,7 @@ func TestSubmitAfterRestartRestoresPending(t *testing.T) {
 		Method: "POST",
 		Body:   []byte(`{"url":` + mustJSON(realFormRedirectURL(state)) + `}`),
 	})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("post-restart paste failed: %s", body)
 	}
 	v, ok := loginStates.Load(state)
@@ -183,7 +183,7 @@ func TestSubmitDoublePasteOutcomeCache(t *testing.T) {
 		Method: "POST",
 		Body:   []byte(`{"url":` + mustJSON(realFormRedirectURL(state)) + `}`),
 	})
-	if !strings.Contains(string(first), "Login successful") {
+	if !strings.Contains(string(first), "Authorization callback received") {
 		t.Fatalf("first paste: %s", first)
 	}
 	// Panel poll drains the state (poll success records the outcome + deletes).
@@ -239,7 +239,7 @@ func TestSubmitBareQueryPaste(t *testing.T) {
 	q := url.Values{}
 	q.Set("cb_url", raw)
 	body := handleOAuthSubmitResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("bare query paste: %s", body)
 	}
 	if lc.authCode != "REAL-FORM-CODE-1" {
@@ -372,7 +372,7 @@ func TestLiveLoginGraceYieldsToHostPoll(t *testing.T) {
 		Method: "POST",
 		Body:   []byte(`{"url":` + mustJSON(realFormRedirectURL(state)) + `}`),
 	})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("paste rejected: %s", body)
 	}
 	// Host poll drains the state before the grace elapses.

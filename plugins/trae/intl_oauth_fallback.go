@@ -16,8 +16,8 @@
 //     candidate_account_api_origins (trae_oauth.rs:1994-2049, 673-689) —
 //     derives candidate API origins from the callback loginHost (rewriting
 //     www. → api.), then appends the Intl account-API defaults
-//     (grow-normal.trae.ai / growsg-normal.trae.ai). ExchangeToken/GetUserInfo
-//     try each URL in turn until one returns an access token.
+//     (grow-normal.trae.ai / growsg-normal.trae.ai). Auth-code exchange now
+//     submits only to the selected first origin; no one-time code replay.
 package main
 
 import (
@@ -50,7 +50,7 @@ var intlLoginGuidanceURLs = []string{
 // grow-normal.traeapi.us = cockpit-tools TRAE_ACCOUNT_API_ORIGIN_USTTP (the
 // upstream's newer US direct origin; live-verified 2026-09-03 that the
 // classic api.* hosts 404 /trae/api/v3/oauth/ExchangeToken at the TLB edge,
-// so every extra real origin widens the fallback without any downside).
+// used only as candidates; auth-code exchange must not replay across them).
 var intlDefaultOrigins = []string{
 	"https://grow-normal.trae.ai",
 	"https://growsg-normal.trae.ai",
@@ -216,73 +216,16 @@ func intlsurfaceUpstreamError(data []byte) string {
 	}
 }
 
-// intlexchangeTokenCandidates tries each candidate URL in turn for the auth-code
-// ExchangeToken call and returns the first 2xx JSON body that carries an
-// access token (any of the field names cockpit-tools accepts). Every failure
-// is recorded so the caller can surface a meaningful error.
+// intlexchangeTokenCandidates submits once to the selected first origin.
+// Additional candidates are not safe replay destinations for one-time codes.
 func intlexchangeTokenCandidates(urls []string, body []byte) ([]byte, error) {
-	// The code is one-time. A timeout/5xx/HTML response may have consumed it.
-	// Never retry against another origin; a new authorization is required.
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("ExchangeToken endpoint unavailable")
-	}
-	req, err := http.NewRequest(http.MethodPost, urls[0], bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("ExchangeToken request unavailable")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-cloudide-token", "")
-	req.Header.Set("User-Agent", "Trae/"+oauthPluginVersion)
-	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
-	defer cancel()
-	resp, err := oauthHTTPDo(req.WithContext(ctx))
-	if err != nil {
-		return nil, fmt.Errorf("ExchangeToken transport outcome uncertain; start a new login")
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, oauthPendingMaxBytes+1))
-	if err != nil || len(data) > oauthPendingMaxBytes {
-		return nil, fmt.Errorf("ExchangeToken response unavailable")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		code, _ := upstreamErrorCode(data)
-		return nil, fmt.Errorf("ExchangeToken HTTP %d%s", resp.StatusCode, safeLoginCode(code)+loginExchangeErrorHint(code))
-	}
-	if extractExchangeAccessToken(data) == "" {
-		return nil, fmt.Errorf("ExchangeToken response missing access token")
-	}
-	return data, nil
+	return exchangeAuthCodeOnce(urls, body)
 }
 
 // intlextractExchangeAccessToken mirrors cockpit-tools extract_exchange_access_token:
 // checks Result/{AccessToken,accessToken,Token,token} plus top-level variants.
 func intlextractExchangeAccessToken(raw []byte) string {
-	var top map[string]any
-	if err := json.Unmarshal(raw, &top); err != nil {
-		return ""
-	}
-	tokenKeys := []string{"AccessToken", "accessToken", "Token", "token"}
-	if sub, ok := top["Result"].(map[string]any); ok {
-		for _, k := range tokenKeys {
-			if s := intljsonString(sub[k]); s != "" {
-				return s
-			}
-		}
-	}
-	if sub, ok := top["result"].(map[string]any); ok {
-		for _, k := range tokenKeys {
-			if s := intljsonString(sub[k]); s != "" {
-				return s
-			}
-		}
-	}
-	for _, k := range tokenKeys {
-		if s := intljsonString(top[k]); s != "" {
-			return s
-		}
-	}
-	return ""
+	return extractExchangeAccessToken(raw)
 }
 
 // intljsonString returns v as a string if it is a JSON string; empty otherwise.
@@ -339,9 +282,9 @@ func intlIsUsttpUserTag(userTag string) bool {
 // (grow-normal.traeapi.us for US-direct accounts) — and NEVER against the
 // callback loginHost (api-sg-central.trae.ai etc. are business-API hosts;
 // posting the auth code there returns HTTP 401 code 20405, live-verified
-// 2026-09-04). loginHost-derived candidates are still appended LAST as a
-// connectivity fallback, after every official origin has had its turn, so a
-// regional outage degrades gracefully instead of hard-failing the login.
+// 2026-09-04). The historical candidate order is retained, but exchange uses
+// ONLY the first origin. A failure never authorizes posting the code again
+// to another candidate, including a loginHost-derived business/HTML host.
 func intlauthCodeExchangeURLs(loginHost, userTag string) []string {
 	var urls []string
 	add := func(origin string) {
@@ -359,8 +302,8 @@ func intlauthCodeExchangeURLs(loginHost, userTag string) []string {
 		add("https://grow-normal.traeapi.us")
 	}
 	// Legacy/fallback origins last: loginHost derivation + the old defaults.
-	// These are business/HTML hosts in the common case; they only matter if
-	// every official account origin is unreachable.
+	// These are business/HTML hosts in the common case. They are not used
+	// as replay destinations for the one-time auth code.
 	urls = append(urls, intlbuildAPIURLs(loginHost, "/trae/api/v3/oauth/ExchangeToken", false)...)
 	return intldedupKeepOrder(urls)
 }

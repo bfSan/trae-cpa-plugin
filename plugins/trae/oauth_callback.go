@@ -292,6 +292,8 @@ func singleInflightLoginState() string {
 	return ""
 }
 
+const oauthCallbackReceivedMessage = "授权回调已收到，凭证交换和保存尚待完成，请回面板查看账号是否出现。Authorization callback received; credential exchange and saving are not yet confirmed. Return to the panel to check whether the account appears."
+
 // handleOAuthCallbackResource serves GET /v0/resource/plugins/trae/oauth_callback —
 // the redirect target embedded in the Trae verification URI. The full
 // upstream query arrives in req.Query; the login is selected via
@@ -333,7 +335,7 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 			return callbackResultHTML("Waiting for authorization", "No authorization code received.")
 		}
 		spawnSelfCompleteCN(lc)
-		return callbackResultHTML("Login successful", "Callback received; credentials are being prepared. Check login status for save confirmation.")
+		return callbackResultHTML("Authorization callback received", oauthCallbackReceivedMessage)
 	}
 	if v, ok := intlloginStates.Load(state); ok {
 		lc := v.(*intlloginCtx)
@@ -345,7 +347,7 @@ func handleOAuthCallbackResource(req pluginapi.ManagementRequest) []byte {
 			return callbackResultHTML("Waiting for authorization", "No authorization code received.")
 		}
 		spawnSelfCompleteIntl(lc)
-		return callbackResultHTML("Login successful", "Callback received; credentials are being prepared. Check login status for save confirmation.")
+		return callbackResultHTML("Authorization callback received", oauthCallbackReceivedMessage)
 	}
 	// v0.12.17: the login already finished (panel poll drained the state, or
 	// the auto-callback completed it before the user pasted). Answer from the

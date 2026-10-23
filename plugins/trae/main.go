@@ -131,7 +131,7 @@ const (
 // version is injected at build time via -ldflags "-X main.version=...".
 // Keep the default in sync with the release tag: the shipped build.sh does
 // NOT inject it (only "-s -w"), so the plugin reports this literal value.
-var version = "0.13.3"
+var version = "0.13.4"
 
 var (
 	hostAPI *C.cliproxy_host_api
@@ -1084,7 +1084,7 @@ func handleCallbackConn(conn netConn, lc *loginCtx) bool {
 	if msg != "" {
 		writeCallbackHTML(conn, "Login failed", msg)
 	} else {
-		writeCallbackHTML(conn, "Login successful", "Callback received; credentials are being prepared.")
+		writeCallbackHTML(conn, "Authorization callback received", oauthCallbackReceivedMessage)
 	}
 	return true
 }
@@ -1322,13 +1322,10 @@ func extractAuthCodeFromAuthCodeInfo(raw string) string {
 // which checks Result.{AccessToken,accessToken,Token,token} and
 // Result.{RefreshToken,refreshToken} (multiple field names supported).
 func parseExchangeTokenResponse(raw []byte) (accessToken, refreshToken string, expiresAt int64) {
-	var env struct {
-		Result map[string]any `json:"Result"`
-	}
-	if err := json.Unmarshal(raw, &env); err != nil || env.Result == nil {
+	r := exchangeTokenFields(raw)
+	if r == nil {
 		return "", "", 0
 	}
-	r := env.Result
 	// Access token candidates (in priority order).
 	for _, k := range []string{"AccessToken", "accessToken", "Token", "token"} {
 		if s := jsonString(r[k]); s != "" {

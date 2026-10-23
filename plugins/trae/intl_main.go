@@ -943,7 +943,7 @@ func intlHandleCallbackConn(conn net.Conn, lc *intlloginCtx) bool {
 	if msg != "" {
 		writeCallbackHTML(conn, "Login failed", msg)
 	} else {
-		writeCallbackHTML(conn, "Login successful", "Callback received; credentials are being prepared.")
+		writeCallbackHTML(conn, "Authorization callback received", oauthCallbackReceivedMessage)
 	}
 	return true
 }

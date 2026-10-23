@@ -18,13 +18,14 @@ import (
 type loginProgress struct {
 	selfRunning     bool
 	mu              sync.Mutex
-	CreatedAt       int64               `json:"created_at"`
-	Owner           string              `json:"owner,omitempty"`
-	ExchangeStarted bool                `json:"exchange_started,omitempty"`
-	Token           *loginToken         `json:"token,omitempty"`
-	Result          *pluginapi.AuthData `json:"result,omitempty"`
-	Saved           bool                `json:"saved,omitempty"`
-	Failure         string              `json:"failure,omitempty"`
+	CreatedAt       int64                 `json:"created_at"`
+	Owner           string                `json:"owner,omitempty"`
+	ExchangeStarted bool                  `json:"exchange_started,omitempty"`
+	Token           *loginToken           `json:"token,omitempty"`
+	Result          *pluginapi.AuthData   `json:"result,omitempty"`
+	Saved           bool                  `json:"saved,omitempty"`
+	Failure         string                `json:"failure,omitempty"`
+	ExchangeFailure *loginExchangeFailure `json:"exchange_failure,omitempty"`
 }
 type loginToken struct {
 	Access     string          `json:"access"`
@@ -55,7 +56,7 @@ func recordIntl(lc *intlloginCtx) pendingLoginRecord {
 	return pendingLoginRecord{Flow: "intl", State: lc.state, Variant: variantIntl, LoginHost: lc.loginHost, CbURL: lc.cbURL, CodeVerifier: lc.codeVerifier, CodeChallenge: lc.codeChallenge, DeviceID: lc.deviceID, MachineID: lc.machineID, DevicePublicKey: lc.devicePublicKey, DevicePrivateKey: lc.devicePrivateKey, AuthDir: lc.authDir, CreatedAt: lc.CreatedAt, ExpiresAt: lc.expires.Unix(), AuthCode: lc.authCode, UserTag: lc.userTag, CBUID: lc.cbUID, CBNickname: lc.cbNickname, Progress: progressCopy(&lc.loginProgress)}
 }
 func progressCopy(p *loginProgress) *loginProgress {
-	return &loginProgress{CreatedAt: p.CreatedAt, Owner: p.Owner, ExchangeStarted: p.ExchangeStarted, Token: p.Token, Result: p.Result, Saved: p.Saved, Failure: p.Failure}
+	return &loginProgress{CreatedAt: p.CreatedAt, Owner: p.Owner, ExchangeStarted: p.ExchangeStarted, Token: p.Token, Result: p.Result, Saved: p.Saved, Failure: p.Failure, ExchangeFailure: p.ExchangeFailure.sanitized()}
 }
 func checkpointCN(lc *loginCtx) error {
 	retainLoginToken(&lc.loginProgress, &lc.expires)
@@ -111,11 +112,14 @@ func finishLogin(p *loginProgress, dir, state string, self bool, checkpoint func
 	return out, nil
 }
 func exchangeOnce(p *loginProgress, checkpoint func() error, exchange func() (*loginToken, error)) error {
-	if p.Token != nil {
+	if p.Token != nil || p.Result != nil {
 		return checkpoint()
 	}
 	if p.ExchangeStarted {
-		return errors.New("login exchange outcome uncertain; start a new login (code will not be resubmitted)")
+		if detail := loginProgressExchangeFailure(p); detail != nil {
+			return detail
+		}
+		return &loginExchangeFailure{Category: "outcome_uncertain"}
 	}
 	p.ExchangeStarted = true
 	if err := checkpoint(); err != nil {
@@ -124,14 +128,21 @@ func exchangeOnce(p *loginProgress, checkpoint func() error, exchange func() (*l
 	}
 	tok, err := exchange()
 	if err != nil {
-		p.Failure = "login exchange failed; start a new login"
+		var detail *loginExchangeFailure
+		if errors.As(err, &detail) && detail != nil {
+			p.ExchangeFailure = detail.sanitized()
+		} else {
+			p.ExchangeFailure = &loginExchangeFailure{Category: "outcome_uncertain"}
+		}
+		p.Failure = p.ExchangeFailure.Error()
 		_ = checkpoint()
-		return errors.New(p.Failure)
+		return p.ExchangeFailure
 	}
 	if tok == nil || tok.Access == "" {
-		p.Failure = "login exchange returned no access token; start a new login"
+		p.ExchangeFailure = &loginExchangeFailure{Category: "missing_access_token"}
+		p.Failure = p.ExchangeFailure.Error()
 		_ = checkpoint()
-		return errors.New(p.Failure)
+		return p.ExchangeFailure
 	}
 	tok.ReceivedAt = time.Now().Unix()
 	p.Token = tok

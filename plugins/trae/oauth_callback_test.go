@@ -159,7 +159,7 @@ func TestHandleOAuthCallbackResourceCNSolo(t *testing.T) {
 	q.Set("authCode", "ac-xyz")
 	q.Set("loginHost", "www.trae.cn")
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("callback body = %s", body)
 	}
 	if lc.authCode != "ac-xyz" || lc.loginHost != "www.trae.cn" {
@@ -183,7 +183,7 @@ func TestHandleOAuthCallbackResourceIntl(t *testing.T) {
 	q.Set("authCode", "ac-intl")
 	q.Set("loginHost", "www.trae.ai")
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("callback body = %s", body)
 	}
 	if lc.authCode != "ac-intl" || lc.loginHost != "www.trae.ai" {
@@ -300,7 +300,7 @@ func TestHandleOAuthCallbackResourceLoginTraceIDEcho(t *testing.T) {
 	q.Set("authCode", "ac-real")
 	q.Set("loginHost", "api.trae.cn")
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("real-redirect callback body = %s", body)
 	}
 	if lc.authCode != "ac-real" {
@@ -327,7 +327,7 @@ func TestHandleOAuthCallbackResourceKeepsFallbackLoginHost(t *testing.T) {
 	q.Set("login_trace_id", state)
 	q.Set("authCode", "ac-nohost")
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("body = %s", body)
 	}
 	if lc.loginHost != "www.trae.cn" {
@@ -346,7 +346,7 @@ func TestHandleOAuthCallbackResourceSingleInflightFallback(t *testing.T) {
 	q.Set("authCode", "ac-single")
 	q.Set("loginHost", "www.trae.ai")
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("single-inflight body = %s", body)
 	}
 	if lc.authCode != "ac-single" {

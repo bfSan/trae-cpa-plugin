@@ -46,7 +46,7 @@ func TestHandleOAuthSubmitResourcePOST(t *testing.T) {
 		Method: "POST",
 		Body:   []byte(`{"url":` + mustJSON(realFormRedirectURL(state)) + `}`),
 	})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("submit body = %s", body)
 	}
 	if lc.authCode != "REAL-FORM-CODE-1" {
@@ -71,7 +71,7 @@ func TestHandleOAuthSubmitResourceGETCBURL(t *testing.T) {
 	q := url.Values{}
 	q.Set("cb_url", realFormRedirectURL(state))
 	body := handleOAuthSubmitResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("submit body = %s", body)
 	}
 	if lc.authCode != "REAL-FORM-CODE-1" {
@@ -91,7 +91,7 @@ func TestHandleOAuthSubmitResourceIntl(t *testing.T) {
 		Method: "POST",
 		Body:   []byte(`{"url":` + mustJSON(raw) + `}`),
 	})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("submit body = %s", body)
 	}
 	if lc.authCode != "REAL-FORM-CODE-1" {

@@ -532,7 +532,7 @@ async function startPanelLogin(variant,btn){
     const d=await api("/login/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({variant})});
     if(d.error||!d.state||!d.url)throw Error(d.error||"登录启动响应不完整");
     const url=new URL(normalizeLoginLink(d.url));if(!["https:","http:"].includes(url.protocol))throw Error("授权地址协议无效");
-    panelLoginState=d.state;sessionStorage.setItem(providerName+"-login-state",d.state);
+    panelLoginState=d.state;panelLoginTerminal=null;sessionStorage.setItem(providerName+"-login-state",d.state);
     const launch=document.getElementById("loginLaunch"),link=document.createElement("a");
     link.href=url.href;link.textContent="打开本次授权页面";link.target="_blank";link.rel="noopener noreferrer";
     launch.textContent="";launch.appendChild(link);
@@ -545,12 +545,22 @@ async function startPanelLogin(variant,btn){
     await refreshLoginStatus();
   }catch(e){closeBlank();toast("登录启动失败","err",e.message)}finally{busy(btn,false)}
 }
+let panelLoginTerminal=null;
+function loginExchangeFailureText(d){
+ const f=d&&d.exchange_failure||{};
+ const labels={request_unavailable:'未能构造凭证交换请求',transport_uncertain:'凭证交换连接中断，结果不确定',response_unavailable:'凭证交换响应未完整收到',http_error:'凭证交换接口返回错误',business_rejected:'上游拒绝凭证交换',invalid_response:'凭证交换响应格式无法识别',missing_access_token:'凭证交换未返回可用 token',outcome_uncertain:'凭证交换结果不确定'};
+ let text=labels[f.category]||'授权回调已收到，但凭证交换未完成';
+ if(Number.isInteger(f.http_status)&&f.http_status>=100&&f.http_status<=599)text+='（HTTP '+f.http_status+'）';
+ if(typeof f.biz_code==='string'&&/^[0-9]{1,8}$/.test(f.biz_code))text+='，业务码 '+f.biz_code;
+ return text+'。账号尚未保存，请重新点击对应渠道的登录按钮完成一次新的授权；不要重复提交旧回调。';
+}
 async function pollPanelLogin(){
-  if(!panelLoginState||panelLoginPolling)return;
+  if(!panelLoginState||panelLoginPolling||panelLoginTerminal)return;
   panelLoginPolling=true;
   try{
     const d=await api("/login/poll",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({state:panelLoginState})});
     if(d.saved===true){panelLoginState="";sessionStorage.removeItem(providerName+"-login-state");document.getElementById("loginLaunch").innerHTML="";toast("登录凭证已保存");await load(false);}
+    else if(d.restart_required===true){panelLoginTerminal=d;document.getElementById("loginStatus").textContent=loginExchangeFailureText(d);document.getElementById("loginLaunch").textContent="本次授权未形成账号，需重新发起登录";}
     else if(d.error)document.getElementById("loginStatus").textContent="登录尚未完成："+d.error;
   }catch(e){document.getElementById("loginStatus").textContent="登录状态待核实："+e.message}
   finally{panelLoginPolling=false}
@@ -561,8 +571,14 @@ async function refreshLoginStatus(){
   if(!el)return;
   try{
     let d;
-    if(panelLoginState)d=await api("/login/status?state="+encodeURIComponent(panelLoginState));
+    if(panelLoginTerminal)d=panelLoginTerminal;
+    else if(panelLoginState)d=await api("/login/status?state="+encodeURIComponent(panelLoginState));
     else {const r=await fetch("/v0/resource/plugins/"+providerName+"/login_status",{credentials:'omit'});d=await r.json();}
+    if(d.restart_required===true){
+      panelLoginTerminal=d;document.getElementById('loginHelp').open=true;
+      el.textContent=loginExchangeFailureText(d);el.style.color='var(--err)';
+      document.getElementById('loginLaunch').textContent='本次授权未形成账号，需重新发起登录';return;
+    }
     if(!d.pending){
       if(d.outcome){
         const om=(d.outcome.message||"").replace(/\s+/g," ").trim();
@@ -580,7 +596,7 @@ async function refreshLoginStatus(){
     document.getElementById("loginHelp").open=true;
     const age=d.age_seconds||0, ttl=d.ttl_seconds_remaining||0;
     const lines=[];
-    if(d.stage)lines.push("阶段："+d.stage+(d.persistent?" · 可恢复":"")+(d.retryable?" · 可重试":""));
+    if(d.stage)lines.push("阶段："+({pending:'等待授权',exchange_started:'交换凭证',token:'补全账号信息',result:'保存凭证',saved:'已保存'}[d.stage]||d.stage)+(d.retryable?' · 可继续':'') );
     lines.push("\u23f3 登录等待中（"+(d.variant||"cn")+"）· 已等待 "+Math.floor(age/60)+" 分 "+(age%60)+" 秒 · 剩余约 "+Math.ceil(ttl/60)+" 分钟");
     if(d.callback_hostport){
       lines.push("浏览器应回连 http://"+d.callback_hostport+"/authorize（服务器本机监听；远程/容器浏览器无法直连属正常现象）");
@@ -589,7 +605,7 @@ async function refreshLoginStatus(){
       lines.push("\u26a0 监听器未在运行（服务重启过）——粘贴框仍可完成本次登录");
     }
     if(d.callback_received){
-      lines.push("\u21bb 回调已收到，正在交换凭证（主面板登录窗口已关闭也没关系：约 15 秒后插件会自行完成交换并保存凭证；若失败，完成后此状态行会显示具体原因）");
+      lines.push(d.stage==='token'||d.stage==='result'?'凭证已取得，正在完成账号保存；列表出现账号后才算完成。':'授权回调已收到，正在交换凭证；这还不代表账号已保存。');
     }
     lines.push(d.restored
       ? "该登录已从磁盘恢复：把浏览器地址栏的完整回调链接粘贴到下方即可。"
@@ -849,34 +865,43 @@ function modelMultiplierLabel(m){
   }
   return typeof m.multiplier==='number'&&Number.isFinite(m.multiplier)?m.multiplier+'×':'未上报';
 }
+function modelThinkingDisplay(m,facts,catalog){
+  const valid=v=>typeof v==='boolean'||typeof v==='string'&&v!=='';
+  const values=[...new Set([...(Array.isArray(m.thinking_options)?m.thinking_options:[]),...catalog.flatMap(c=>Array.isArray(c.thinking_options)?c.thinking_options:[])].filter(valid))];
+  let selected,source='';
+  if(valid(m.thinking)&&!['unknown','different','stale'].includes(m.thinking_state)&&!(m.unknown_credentials>0)){
+    selected=m.thinking;source='当前模型元数据';
+  }else if(facts.length&&!(m.unknown_credentials>0)){
+    const defaults=facts.map(f=>{
+      const candidates=(Array.isArray(f.capability_catalog)?f.capability_catalog:[]).filter(c=>['solo_work_lite','solo_agent','solo_agent_remote','solo_work_remote','solo_design_remote'].includes(c.source_function)&&valid(c.thinking_default)&&Array.isArray(c.thinking_options)&&c.thinking_options.includes(c.thinking_default));
+      const rank=c=>c.source_function==='solo_agent'?1:0;candidates.sort((a,b)=>rank(a)-rank(b));
+      if(!candidates.length)return null;
+      const best=candidates.filter(c=>rank(c)===rank(candidates[0]));if(new Set(best.map(c=>c.thinking_default)).size!==1)return null;
+      return {value:best[0].thinking_default,source:best[0].source_function};
+    });
+    if(defaults.every(Boolean)&&new Set(defaults.map(d=>d.value)).size===1){selected=defaults[0].value;source=[...new Set(defaults.map(d=>d.source))].join(' / ');}
+  }
+  if(selected!==undefined&&!values.includes(selected))values.push(selected);
+  const text=v=>typeof v==='boolean'?(v?'开启':'关闭'):v;
+  return {source,html:values.length?values.map(v=>`<span${v===selected?' class="thinking-default"':''}>${esc(text(v))}${v===selected?'（默认）':''}</span>`).join(' / '):'未上报'};
+}
 function modelChannelCell(realm,m){
   if(!m)return '<span class="mg-meta">—</span>';
   const facts=Array.isArray(m.facts)?m.facts:[],catalog=facts.flatMap(f=>Array.isArray(f.capability_catalog)?f.capability_catalog:[]);
   const positive=values=>[...new Set(values.map(Number).filter(n=>Number.isFinite(n)&&n>0))].sort((a,b)=>a-b);
   const effective=positive(Array.isArray(m.context_lengths)&&m.context_lengths.length?m.context_lengths:[m.context_length]);
-  const references=facts.flatMap(f=>Object.values(f.contexts||{})).concat(catalog.flatMap(c=>[...Object.values(c.contexts||{}),...Object.values(c.context_options||{}).flat()]));
-  const contexts=positive([...effective,...references]);
-  // Only source-labelled tiers describe ordinary/extended capability. A current
-  // CPA declaration or an observed maximum is not evidence of an official default.
-  const tierSources=[...facts,...catalog];
-  const tierValues=key=>positive(tierSources.flatMap(f=>[f.contexts&&f.contexts[key],...(f.context_options&&f.context_options[key]||[])]));
-  const ordinary=tierValues('dev'),extended=tierValues('max');
-  const labelled=new Set([...ordinary,...extended]);
-  const tiers=[...ordinary.map(n=>'普通 '+modelContextLabel(n)),...extended.map(n=>'扩展 '+modelContextLabel(n)),...contexts.filter(n=>!labelled.has(n)).map(modelContextLabel)];
-  const ctx=tiers.length?tiers.map(label=>`<span>${esc(label)}</span>`).join(' / '):'未上报';
-  const explicitThinking=(typeof m.thinking==='boolean'||typeof m.thinking==='string'&&m.thinking!=='')&&m.thinking_state!=='unknown'&&m.thinking_state!=='different';
-  const thoughts=[...new Set([...(Array.isArray(m.thinking_options)?m.thinking_options:[]),...(explicitThinking?[m.thinking]:[])].filter(v=>typeof v==='boolean'||typeof v==='string'))];
-  const referenceThinking=[...new Set(catalog.flatMap(c=>Array.isArray(c.thinking_options)?c.thinking_options:[]).filter(v=>typeof v==='string'))];
-  const thinking=thoughts.length?thoughts.map(v=>`<span${explicitThinking&&v===m.thinking?' class="thinking-default"':''}>${esc(typeof v==='boolean'?(v?'开启':'关闭'):v)}</span>`).join(' / '):(referenceThinking.length?referenceThinking.map(v=>`<span>${esc(v)}</span>`).join(' / ')+'<span class="mg-meta">（目录参考）</span>':'未上报');
+  const declarations=facts.flatMap(f=>Object.values(f.contexts||{})).concat(catalog.flatMap(c=>[...Object.values(c.contexts||{}),...Object.values(c.context_options||{}).flat()]));
+  const contexts=positive([...effective,...declarations]),current=Number(m.context_length);
+  const ctx=contexts.length?contexts.map(n=>`<span${effective.length===1&&n===current?' class="ctx-default"':''}>${esc(modelContextLabel(n))}</span>`).join(' / '):'未上报';
+  const thinking=modelThinkingDisplay(m,facts,catalog);
   const evidence=facts.map(f=>f.context_evidence).filter(e=>e&&['verified_input','upstream_usage_and_markers'].includes(e.kind)&&Number(e.observed_input_tokens)>0);
-
   const detail=m.id+' · 倍率 '+modelMultiplierLabel(m)+' · '+(m.credentials||0)+'/'+(m.total||0)+' 凭证记录'+
-    (contexts.length?' · 目录档位（上游参考）；非官方默认，非模式开关':'')+
+    (contexts.length?' · 上下文只读；蓝色为当前CPA生效值，不能点击选档':'')+
     (effective.length?' · CPA声明 '+effective.map(modelContextLabel).join(' / ')+(effective.length>1?'（账号差异）':''):'')+
     (evidence.length?' · 已实测输入 '+Math.max(...evidence.map(e=>Number(e.observed_input_tokens)))+' tokens':'')+
-    (referenceThinking.length?' · 上游思考参考 '+referenceThinking.join(' / ')+'（非当前默认）':'')+
+    (thinking.source?' · 思考默认来源 '+thinking.source+'；实际请求仍由客户端参数决定':'')+
     (m.fetched_at?' · 快照 '+promoTime(m.fetched_at,''):'');
-  return `<div class="realm-cell" title="${escAttr(detail)}"><div class="realm-facts"><span>倍率 ${esc(modelMultiplierLabel(m))}</span><span>思考 ${thinking}</span><span>上下文 ${ctx}</span></div></div>`;
+  return `<div class="realm-cell" title="${escAttr(detail)}"><div class="realm-facts"><span>倍率 ${esc(modelMultiplierLabel(m))}</span><span>思考 ${thinking.html}</span><span>上下文 ${ctx}</span></div></div>`;
 }
 function modelRowState(row){
   const channels=Object.entries(row.channels).map(([realm,m])=>{

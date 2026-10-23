@@ -60,7 +60,7 @@ func TestResourceCallbackAppliesDerivedIdentityCN(t *testing.T) {
 	q.Set("authCode", "ac-derived")
 	q.Set("userInfo", `{"UserID":"1237380756941412","ScreenName":"用户37396015402"}`)
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("callback body = %s", body)
 	}
 	if lc.authCode != "ac-derived" {
@@ -91,7 +91,7 @@ func TestResourceCallbackAppliesDerivedIdentityIntl(t *testing.T) {
 	q.Set("authCode", "ac-intl-derived")
 	q.Set("userInfo", `{"UserID":"1b78b3c2-62f0-42e5-84fe-51e3c55e4914"}`)
 	body := handleOAuthCallbackResource(pluginapi.ManagementRequest{Method: "GET", Query: q})
-	if !strings.Contains(string(body), "Login successful") {
+	if !strings.Contains(string(body), "Authorization callback received") {
 		t.Fatalf("callback body = %s", body)
 	}
 	id := deriveAccountDeviceIdentity(variantIntl, "1b78b3c2-62f0-42e5-84fe-51e3c55e4914")
@@ -142,7 +142,7 @@ func TestListenerCallbackAppliesDerivedIdentityCN(t *testing.T) {
 		"state="+state+
 			"&authCode=ac-listener"+
 			"&userInfo="+url.QueryEscape(`{"UserID":"1237380756941412","ScreenName":"用户37396015402"}`))
-	if !strings.Contains(resp, "Login successful") {
+	if !strings.Contains(resp, "Authorization callback received") {
 		t.Fatalf("listener response = %s", resp)
 	}
 	v, ok := loginStates.Load(state)
@@ -157,7 +157,7 @@ func TestListenerCallbackAppliesDerivedIdentityCN(t *testing.T) {
 func TestListenerCallbackWithoutUserInfoKeepsBootstrap(t *testing.T) {
 	state := "acct-cn-listener-noecho"
 	resp := driveListenerLogin(t, state, "state="+state+"&authCode=ac-listener-noecho")
-	if !strings.Contains(resp, "Login successful") {
+	if !strings.Contains(resp, "Authorization callback received") {
 		t.Fatalf("listener response = %s", resp)
 	}
 	v, ok := loginStates.Load(state)

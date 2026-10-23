@@ -212,43 +212,10 @@ func requestLoginGuidance(cn bool, loginTraceID string) (loginHost string, lastE
 	return "", fmt.Errorf("login guidance failed: %s", strings.Join(errs, " | "))
 }
 
-// exchangeTokenCandidates tries each candidate URL in turn for the auth-code
-// ExchangeToken call and returns the first 2xx JSON body that carries an
-// access token (any of the field names cockpit-tools accepts). Every failure
-// is recorded so the caller can surface a meaningful error.
+// exchangeTokenCandidates submits once to the selected first origin.
+// Additional candidates are not safe replay destinations for one-time codes.
 func exchangeTokenCandidates(urls []string, body []byte) ([]byte, error) {
-	// The code is one-time. A timeout/5xx/HTML response may have consumed it.
-	// Never retry against another origin; a new authorization is required.
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("ExchangeToken endpoint unavailable")
-	}
-	req, err := http.NewRequest(http.MethodPost, urls[0], bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("ExchangeToken request unavailable")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-cloudide-token", "")
-	req.Header.Set("User-Agent", "Trae/"+oauthPluginVersion)
-	ctx, cancel := context.WithTimeout(req.Context(), 30*time.Second)
-	defer cancel()
-	resp, err := oauthHTTPDo(req.WithContext(ctx))
-	if err != nil {
-		return nil, fmt.Errorf("ExchangeToken transport outcome uncertain; start a new login")
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, oauthPendingMaxBytes+1))
-	if err != nil || len(data) > oauthPendingMaxBytes {
-		return nil, fmt.Errorf("ExchangeToken response unavailable")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		code, _ := upstreamErrorCode(data)
-		return nil, fmt.Errorf("ExchangeToken HTTP %d%s", resp.StatusCode, safeLoginCode(code)+loginExchangeErrorHint(code))
-	}
-	if extractExchangeAccessToken(data) == "" {
-		return nil, fmt.Errorf("ExchangeToken response missing access token")
-	}
-	return data, nil
+	return exchangeAuthCodeOnce(urls, body)
 }
 
 // upstreamErrorCode 解析 Volcengine 风格 ResponseMetadata.Error {Code, Message}；
@@ -258,15 +225,22 @@ func upstreamErrorCode(data []byte) (code, msg string) {
 	var env struct {
 		ResponseMetadata struct {
 			Error struct {
-				Code    string `json:"Code"`
-				Message string `json:"Message"`
+				Code    json.RawMessage `json:"Code"`
+				Message string          `json:"Message"`
 			} `json:"Error"`
 		} `json:"ResponseMetadata"`
 	}
 	if err := json.Unmarshal(data, &env); err != nil {
 		return "", ""
 	}
-	return strings.TrimSpace(env.ResponseMetadata.Error.Code), strings.TrimSpace(env.ResponseMetadata.Error.Message)
+	raw := env.ResponseMetadata.Error.Code
+	if json.Unmarshal(raw, &code) != nil {
+		var number json.Number
+		if json.Unmarshal(raw, &number) == nil {
+			code = number.String()
+		}
+	}
+	return strings.TrimSpace(code), strings.TrimSpace(env.ResponseMetadata.Error.Message)
 }
 
 // loginExchangeErrorHint 把登录交换的上游业务码映射为用户可执行的恢复指引。
@@ -294,27 +268,9 @@ func surfaceUpstreamError(data []byte) string {
 // extractExchangeAccessToken mirrors cockpit-tools extract_exchange_access_token:
 // checks Result/{AccessToken,accessToken,Token,token} plus top-level variants.
 func extractExchangeAccessToken(raw []byte) string {
-	var top map[string]any
-	if err := json.Unmarshal(raw, &top); err != nil {
-		return ""
-	}
-	tokenKeys := []string{"AccessToken", "accessToken", "Token", "token"}
-	if sub, ok := top["Result"].(map[string]any); ok {
-		for _, k := range tokenKeys {
-			if s := jsonString(sub[k]); s != "" {
-				return s
-			}
-		}
-	}
-	if sub, ok := top["result"].(map[string]any); ok {
-		for _, k := range tokenKeys {
-			if s := jsonString(sub[k]); s != "" {
-				return s
-			}
-		}
-	}
-	for _, k := range tokenKeys {
-		if s := jsonString(top[k]); s != "" {
+	r := exchangeTokenFields(raw)
+	for _, key := range []string{"AccessToken", "accessToken", "Token", "token"} {
+		if s := jsonString(r[key]); s != "" {
 			return s
 		}
 	}

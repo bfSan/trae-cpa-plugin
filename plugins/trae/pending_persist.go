@@ -366,23 +366,25 @@ type loginStatusOutcome struct {
 }
 
 type loginStatusPayload struct {
-	State         string `json:"state,omitempty"`
-	Stage         string `json:"stage,omitempty"`
-	Persistent    bool   `json:"persistent"`
-	Retryable     bool   `json:"retryable"`
-	Saved         bool   `json:"saved"`
-	Owner         string `json:"owner,omitempty"`
-	Pending       bool   `json:"pending"`
-	Restored      bool   `json:"restored"`
-	Variant       string `json:"variant,omitempty"`
-	CallbackHP    string `json:"callback_hostport,omitempty"`
-	AgeSec        int64  `json:"age_seconds,omitempty"`
-	TTLRemaining  int64  `json:"ttl_seconds_remaining,omitempty"`
-	ListenerAlive bool   `json:"listener_alive"`
+	State           string `json:"state,omitempty"`
+	Stage           string `json:"stage,omitempty"`
+	Persistent      bool   `json:"persistent"`
+	Retryable       bool   `json:"retryable"`
+	RestartRequired bool   `json:"restart_required"`
+	Saved           bool   `json:"saved"`
+	Owner           string `json:"owner,omitempty"`
+	Pending         bool   `json:"pending"`
+	Restored        bool   `json:"restored"`
+	Variant         string `json:"variant,omitempty"`
+	CallbackHP      string `json:"callback_hostport,omitempty"`
+	AgeSec          int64  `json:"age_seconds,omitempty"`
+	TTLRemaining    int64  `json:"ttl_seconds_remaining,omitempty"`
+	ListenerAlive   bool   `json:"listener_alive"`
 	// CallbackReceived: the browser redirect already landed (or a paste was
 	// accepted) and the token exchange is pending the next poll drain.
-	CallbackReceived bool                `json:"callback_received,omitempty"`
-	Outcome          *loginStatusOutcome `json:"outcome,omitempty"`
+	CallbackReceived bool                  `json:"callback_received,omitempty"`
+	Outcome          *loginStatusOutcome   `json:"outcome,omitempty"`
+	ExchangeFailure  *loginExchangeFailure `json:"exchange_failure,omitempty"`
 }
 
 func mgmtJSONResourceResponse(body []byte) pluginapi.ManagementResponse {
@@ -483,7 +485,7 @@ func handleLoginStatusResource() []byte {
 	payload := loginStatusPayload{}
 	if snap, ok := snapshotPending(); ok {
 		payload = oauthLoginStatus(snap.state)
-		payload.Pending = true
+		payload.Pending = !payload.RestartRequired
 		payload.Restored = snap.restored
 		payload.Variant = snap.variant
 		payload.CallbackHP = callbackHostPort(snap.cbURL)
@@ -495,7 +497,7 @@ func handleLoginStatusResource() []byte {
 		// loadPendingLogin also sweeps an expired record (cleanup side effect).
 		if rec, ok := loadPendingLogin(dir); ok {
 			payload = oauthLoginStatus(rec.State)
-			payload.Pending = rec.Progress == nil || (!rec.Progress.Saved && rec.Progress.Owner != "host")
+			payload.Pending = !payload.RestartRequired && (rec.Progress == nil || (!rec.Progress.Saved && rec.Progress.Owner != "host"))
 			payload.Restored = true // not in memory -> only the disk record serves it
 			payload.Variant = rec.Variant
 			payload.CallbackHP = callbackHostPort(rec.CbURL)
@@ -524,4 +526,10 @@ func restoreLoginProgress(dst, src *loginProgress) {
 	dst.Result = src.Result
 	dst.Saved = src.Saved
 	dst.Failure = src.Failure
+	dst.ExchangeFailure = src.ExchangeFailure.sanitized()
+	// A persisted started exchange with no checkpointed token cannot still be
+	// running after restore. Do not retry it or present it as waiting forever.
+	if dst.ExchangeStarted && dst.Token == nil && dst.Result == nil && dst.ExchangeFailure == nil {
+		dst.ExchangeFailure = &loginExchangeFailure{Category: "outcome_uncertain"}
+	}
 }

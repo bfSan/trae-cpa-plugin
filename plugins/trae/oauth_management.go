@@ -84,7 +84,10 @@ func handleOAuthManagementPoll(req pluginapi.ManagementRequest) pluginapi.Manage
 		return mgmtJSONResponse(http.StatusNotFound, map[string]any{"error": "unknown or expired login state"})
 	}
 	payload := oauthLoginStatus(state)
-	response := map[string]any{"state": state, "status": out.Status, "stage": payload.Stage, "persistent": payload.Persistent, "retryable": payload.Retryable, "saved": payload.Saved, "pending": payload.Pending, "expires_in": payload.TTLRemaining}
+	response := map[string]any{"state": state, "status": out.Status, "stage": payload.Stage, "persistent": payload.Persistent, "retryable": payload.Retryable, "saved": payload.Saved, "pending": payload.Pending, "expires_in": payload.TTLRemaining, "restart_required": payload.RestartRequired}
+	if payload.ExchangeFailure != nil {
+		response["exchange_failure"] = payload.ExchangeFailure
+	}
 	if err != nil {
 		response["status"] = "error"
 		response["error"] = err.Error()
@@ -106,6 +109,8 @@ func oauthLoginStatus(state string) loginStatusPayload {
 	p := loginStatusPayload{State: state}
 	fill := func(progress *loginProgress, dir, variant, cb string, expires time.Time, restored, listener, callback bool) {
 		p.Stage = progress.stage()
+		p.ExchangeFailure = loginProgressExchangeFailure(progress)
+		p.RestartRequired = p.ExchangeFailure != nil
 		p.Persistent = dir != ""
 		p.Saved = progress.Saved
 		p.Owner = progress.Owner
@@ -116,8 +121,8 @@ func oauthLoginStatus(state string) loginStatusPayload {
 		p.CallbackReceived = callback
 		p.TTLRemaining = int64(time.Until(expires).Seconds())
 		p.AgeSec = time.Now().Unix() - progress.CreatedAt
-		p.Pending = time.Now().Before(expires) && !p.Saved && progress.Owner != "host"
-		p.Retryable = time.Now().Before(expires) && !p.Saved && progress.Owner != "host" && (!progress.ExchangeStarted || progress.Token != nil)
+		p.Pending = !p.RestartRequired && time.Now().Before(expires) && !p.Saved && progress.Owner != "host"
+		p.Retryable = time.Now().Before(expires) && !p.Saved && progress.Owner != "host" && (!progress.ExchangeStarted || progress.Token != nil || progress.Result != nil)
 	}
 	if v, ok := loginStates.Load(state); ok {
 		lc := v.(*loginCtx)

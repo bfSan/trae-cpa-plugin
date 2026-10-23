@@ -75,15 +75,15 @@ test('model DOM uses rounded row grid, three facts and one row action without ch
  const h=harness();h.run(catalog);const rows=h.element('modelGroupsBox').querySelectorAll('.model-row');assert.equal(rows.length,2);assert.equal(rows[0].querySelectorAll('.realm-facts').length,2);assert.equal(rows[0].querySelectorAll('[data-model-toggle]').length,1);assert.equal(h.element('modelGroupsBox').querySelectorAll('input').length,0);assert.equal(rows[0].querySelector('.drag-handle').getAttribute('draggable'),'true');
  assert.equal(h.run('catalogRows().length'),2);assert.match(rows[0].textContent,/倍率 未上报思考 未上报上下文 64K/);
 });
-test('context ordinary and maximum tiers are not default selections; facts stay readonly',async()=>{
- const h=harness();h.run(catalog);const rows=h.element('modelGroupsBox').querySelectorAll('.model-row');assert.equal(rows[0].querySelectorAll('.ctx-default').length,0);assert.equal(rows[0].querySelectorAll('.thinking-default').length,0);
+test('effective context is blue and explicit thinking defaults match WorkBuddy, all readonly',async()=>{
+ const h=harness();h.run(catalog);const rows=h.element('modelGroupsBox').querySelectorAll('.model-row');assert.ok(rows[0].querySelectorAll('.ctx-default').length>0);assert.equal(rows[0].querySelectorAll('.thinking-default').length,0);
  const target=h.element('modelGroupsBox');target.innerHTML=h.run(`modelChannelCell('solo',{id:'deepseek-solo',context_length:1000000,context_lengths:[1000000],thinking:true,thinking_state:'known',facts:[{contexts:{dev:200000},context_evidence:{kind:'upstream_usage_and_markers',observed_input_tokens:990767},capability_catalog:[{source_function:'reference',contexts:{dev:200000,max:1000000},thinking_options:['off','on'],thinking_default:'off'}]}]})`);
- assert.match(target.textContent,/上下文 普通 200K \/ 扩展 1M/);assert.equal(target.querySelector('.ctx-default'),null);assert.equal(target.querySelector('.thinking-default').textContent,'开启');assert.match(target.querySelector('.realm-cell').getAttribute('title'),/CPA声明 1M/);assert.match(target.querySelector('.realm-cell').getAttribute('title'),/已实测输入 990767 tokens/);
+ assert.match(target.textContent,/上下文 200K \/ 1M/);assert.equal(target.querySelector('.ctx-default').textContent,'1M');assert.equal(target.querySelector('.thinking-default').textContent,'开启（默认）');assert.match(target.querySelector('.realm-cell').getAttribute('title'),/CPA声明 1M/);assert.match(target.querySelector('.realm-cell').getAttribute('title'),/已实测输入 990767 tokens/);
  h.run(`var writes=0;api=hostAPI=async()=>{writes++;throw Error('unexpected write')};`);
  for(const selector of ['button','[onclick]','[role="button"]','[tabindex]'])assert.equal(target.querySelectorAll(selector).length,0,selector);
  for(const el of target.querySelectorAll('span')){assert.equal(el.onclick,undefined);await el.dispatch('click');assert.notEqual(el.style.cursor,'pointer');}assert.equal(h.run('writes'),0);
  assert.doesNotMatch(html,/\.(?:realm-cell|realm-facts|ctx-default|thinking-default)[^{]*\{[^}]*cursor\s*:\s*pointer/);
- target.innerHTML=h.run(`modelChannelCell('cn',{id:'x',context_length:128000,context_lengths:[64000,128000],default_context_length:128000,default_thinking:'on',thinking:null,facts:[{capability_catalog:[{thinking_options:['on'],thinking_default:'on'}]}]})`);assert.equal(target.querySelectorAll('.ctx-default').length,0);assert.equal(target.querySelectorAll('.thinking-default').length,0);assert.match(target.textContent,/思考 on（目录参考）/);
+ target.innerHTML=h.run(`modelChannelCell('cn',{id:'x',context_length:128000,context_lengths:[64000,128000],default_context_length:128000,default_thinking:'on',thinking:null,facts:[{capability_catalog:[{thinking_options:['on'],thinking_default:'on'}]}]})`);assert.equal(target.querySelectorAll('.ctx-default').length,0);assert.equal(target.querySelectorAll('.thinking-default').length,0);assert.match(target.textContent,/思考 on/);
  assert.equal(h.run(`modelMultiplierLabel({multiplier_state:'unknown',multiplier:0.1})`),'未上报');assert.equal(h.run(`modelMultiplierLabel({multiplier_state:'stale',multiplier:0.1})`),'待刷新');assert.match(h.run(`modelMultiplierLabel({multiplier_state:'different',multipliers:[1,2]})`),/账号差异/);
 });
 test('hide click serially saves all present channels and preserves unseen excludes and global locks',async()=>{
@@ -276,7 +276,7 @@ test('keyboard and drag cannot cross hidden partition; saving keeps all IDs and 
 });
 test('single model card has no internally fixed height and full thinking/context facts wrap',()=>{
  const h=harness();assert.equal(h.document.querySelectorAll('#modelCtlCard').length,1);assert.equal((html.match(/id="modelCtlCard"/g)||[]).length,1);assert.doesNotMatch(html,/\.model-rows\{[^}]*(?:max-height|height:|overflow:auto)/);assert.match(html,/grid-template-columns:[^}]*86px/);assert.doesNotMatch(html,/\.realm-facts(?:>span)?\{[^}]*(?:ellipsis|nowrap|overflow:hidden)/);
- const box=h.element('modelGroupsBox');box.innerHTML=h.run(`modelChannelCell('cn',{id:'context',context_length:200000,thinking_options:['light','high','extra-high'],facts:[{contexts:{dev:200000,max:1000000}}]})`);assert.match(box.textContent,/light \/ high \/ extra-high/);assert.match(box.textContent,/普通 200K \/ 扩展 1M/);assert.equal(box.querySelector('.ctx-default'),null);assert.match(box.querySelector('.realm-cell').getAttribute('title'),/CPA声明 200K/);assert.equal(box.querySelectorAll('button').length,0);
+ const box=h.element('modelGroupsBox');box.innerHTML=h.run(`modelChannelCell('cn',{id:'context',context_length:200000,thinking_options:['light','high','extra-high'],facts:[{contexts:{dev:200000,max:1000000}}]})`);assert.match(box.textContent,/light \/ high \/ extra-high/);assert.match(box.textContent,/200K \/ 1M/);assert.equal(box.querySelector('.ctx-default')?.textContent,'200K');assert.match(box.querySelector('.realm-cell').getAttribute('title'),/CPA声明 200K/);assert.equal(box.querySelectorAll('button').length,0);
 });
 test('login builds DOM link from raw ampersands once without changing encoded challenge or signature',async()=>{
  const h=harness(),url='https://example.test/authorize?client_id=a&amp;code_challenge=x%2By%252F&amp;signature=s%26x%3Dy';h.run(`var opened=[],navigated=[];window.open=(...args)=>{opened.push(args);return {opener:window,closed:false,location:{href:'about:blank',replace:url=>navigated.push(url)}}};refreshLoginStatus=async()=>{};api=async()=>({state:'login-state',url:${JSON.stringify(url)}});`);await h.run(`startPanelLogin('intl',null)`);
@@ -311,4 +311,18 @@ test('login start failure closes only still-blank popup and never persists false
  for(const moved of [false,true]){
   const h=harness();h.run(`var closed=false,popup={opener:window,closed:false,location:{href:'about:blank'},close(){closed=true}};window.open=()=>popup;api=async()=>{${moved?"popup.location.href='https://user-chosen.test/';":''}throw Error('start failed')};`);await h.run(`startPanelLogin('solo',null)`);assert.equal(h.run('closed'),!moved);assert.equal(h.run('panelLoginState'),'');assert.match(h.run('messages[0][0]'),/登录启动失败/);assert.equal(h.element('loginLaunch').querySelector('a'),null);
  }
+});
+
+test('catalog thinking default uses an explicit matching value without directory wording',()=>{
+ const h=harness(),e=h.element('modelGroupsBox');e.innerHTML=h.run(`modelChannelCell('cn',{id:'m',context_length:1000000,context_lengths:[1000000],facts:[{contexts:{dev:200000},capability_catalog:[{source_function:'solo_agent',contexts:{max:1000000},thinking_options:['light','high','extra_high'],thinking_default:'high'}]}]})`);
+ assert.match(e.textContent,/light \/ high（默认） \/ extra_high/);assert.doesNotMatch(e.textContent,/目录参考|普通|扩展/);assert.equal(e.querySelector('.ctx-default').textContent,'1M');assert.equal(e.querySelector('.thinking-default').textContent,'high（默认）');assert.equal(e.querySelectorAll('button,input,select,[onclick],[tabindex]').length,0);
+ e.innerHTML=h.run(`modelChannelCell('cn',{id:'m',unknown_credentials:1,facts:[{capability_catalog:[{source_function:'solo_agent',thinking_options:['high'],thinking_default:'high'}]}]})`);assert.equal(e.querySelectorAll('.thinking-default').length,0);
+ e.innerHTML=h.run(`modelChannelCell('cn',{id:'m',facts:[{capability_catalog:[{source_function:'solo_agent',thinking_options:['high','light'],thinking_default:'high'}]},{capability_catalog:[{source_function:'solo_agent',thinking_options:['high','light'],thinking_default:'light'}]}]})`);assert.equal(e.querySelectorAll('.thinking-default').length,0);
+});
+
+test('terminal exchange failure explains missing account and stops stale poll without claiming success',async()=>{
+ const h=harness();h.run(`panelLoginState='test-state';var calls=[];api=async(path)=>{calls.push(path);return {pending:false,saved:false,stage:'exchange_started',restart_required:true,exchange_failure:{category:'http_error',http_status:404}}};`);
+ await h.run('refreshLoginStatus()');assert.match(h.element('loginStatus').textContent,/HTTP 404/);assert.match(h.element('loginStatus').textContent,/账号尚未保存/);assert.doesNotMatch(h.element('loginStatus').textContent,/登录等待中|登录已完成/);assert.equal(h.run('calls.length'),1);
+ await h.run('refreshLoginStatus()');assert.equal(h.run('calls.length'),1);assert.equal(h.run('panelLoginState'),'test-state');
+ assert.match(h.run(`loginExchangeFailureText({exchange_failure:{category:'outcome_uncertain'}})`),/结果不确定/);
 });

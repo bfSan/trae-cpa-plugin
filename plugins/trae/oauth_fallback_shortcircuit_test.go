@@ -4,7 +4,7 @@
 // or 10101) instead of fanning the same doomed request out to every
 // remaining origin — the user-reported noise chain was api.trae.cn 403+20401
 // → api.trae.com.cn 400+10101 → www.trae.cn WAF HTML. Network errors, 404s,
-// 5xx and HTML bodies keep the original fallback behavior.
+// 5xx and HTML bodies are also non-replayable (v0.13.0 onward).
 package main
 
 import (
@@ -47,8 +47,8 @@ func TestExchangeShortCircuitsOnBusinessRejection(t *testing.T) {
 }
 
 // TestExchangeDoesNotReplayOn404AndHTML: a 404 with an HTML body is a transport
-// concern, not an account state — the fan-out must move on and succeed on
-// the next candidate (both servers hit).
+// concern, not proof that a code was unconsumed — do not call the next
+// candidate.
 func TestExchangeDoesNotReplayOn404AndHTML(t *testing.T) {
 	var aHits, bHits int32
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +73,7 @@ func TestExchangeDoesNotReplayOn404AndHTML(t *testing.T) {
 }
 
 // TestExchangeDoesNotReplayOn5xx: a 500 without the ResponseMetadata.Error.Code
-// envelope is an outage, not a rejection — keep falling back.
+// envelope still cannot prove non-consumption — do not fall back.
 func TestExchangeDoesNotReplayOn5xx(t *testing.T) {
 	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
