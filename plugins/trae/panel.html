@@ -376,7 +376,12 @@ async function accountAction(action,index,btn){
     let d;
     if(action==="delete")d=await hostAPI("/auth-files?name="+encodeURIComponent(a.name),{method:"DELETE"});
     else d=await api(action==="token-refresh"?"/accounts/refresh":"/accounts/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-    if(d&&d.error)throw Error(d.error);if(action==="delete"&&(!d||d.status!=="ok"))throw Error("宿主未确认删除");toast("账号操作已完成");await load(false);
+    if(d&&d.error)throw Error(d.error);if(action==="delete"&&(!d||d.status!=="ok"))throw Error("宿主未确认删除");
+    if(action==='token-refresh'){
+      await load(false);
+      const synced=await syncModelsAfterAuth();
+      authRefreshToast(d,synced);
+    }else{toast("账号操作已完成");await load(false);}
   }
   catch(e){toast("账号操作失败","err",e.message)}finally{busy(btn,false)}
 }
@@ -608,7 +613,7 @@ async function submitCallbackURL(btn){
 async function load(force, btn){
   const g=document.getElementById("grid");
   if(force){
-    modelCtlLoad();loadAutoCheckin();
+    loadAutoCheckin();
     if(!btn) btn=document.getElementById("refreshBtn");
     busy(btn, true);
   }
@@ -638,6 +643,7 @@ async function load(force, btn){
     (intlAccounts||[]).forEach(a=>{ if(a.auth_index&&seenIdx.has(a.auth_index))return; if(a.auth_index)seenIdx.add(a.auth_index); accounts.push(Object.assign({variant:"intl"},a)); });
     lastAccounts=accounts;
     if(d.promotions)renderPromotions(d.promotions);
+    const modelSynced=force?await syncModelsAfterAuth():true;
 
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 '+esc(providerName)+' 账号</div>';
@@ -651,7 +657,9 @@ async function load(force, btn){
       const errN=accounts.filter(a=>a.error).length;
       let extra=accounts.length+" 个账号";
       if(errN) extra+=" · "+errN+" 个有错误";
-      if(errN) toast("数据已刷新", "warn", extra);
+      if(d.model_refresh||[...(Array.isArray(d.results)?d.results:[]),...(Array.isArray(d.items)?d.items:[])].some(x=>x.model_refresh))authRefreshToast(d,modelSynced);
+      else if(!modelSynced)toast("数据已刷新，模型目录回读失败","warn",extra);
+      else if(errN) toast("数据已刷新", "warn", extra);
       else toast("数据已刷新", "ok", extra);
     }
   }catch(e){
@@ -769,7 +777,7 @@ document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="E
    锁定显示（徽标），本面板只管渠道子键，避免跨键歧义。 */
 const HOST_API="/v0/management";
 let modelCtlLoaded=false,modelGroupsData=null,modelExclMap=null,modelRowOrder=[],modelEdits=new Map();
-let modelBusy=false,modelLoading=false,modelEpoch=0,modelStateValid=false;
+let modelBusy=false,modelLoading=false,modelEpoch=0,modelCatalogEpoch=0,modelStateValid=false;
 async function hostAPI(path,opts={}){
   const k=getKey();
   const r=await fetch(HOST_API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
@@ -790,21 +798,20 @@ function normalizedExclusions(values){return [...new Set(values.map(v=>v.trim().
 function validateGroups(g){if(!g||g.error||!Array.isArray(g.groups))throw Error(g&&g.error||"模型目录未返回");return g;}
 async function modelCtlLoad(refresh=false,internal=false){
   if(modelBusy&&!internal)return false;
-  const epoch=++modelEpoch;
-  if(refresh)modelMetadataAttemptAt=Date.now();
+  const epoch=++modelEpoch,catalogEpoch=++modelCatalogEpoch;
   modelLoading=true;modelStateValid=false;document.getElementById("modelRefreshBtn").disabled=true;modelStatus(refresh?"正在刷新目录…":"正在读取模型设置…");
   if(modelGroupsData)renderModelGroups();
   try{
     const [g,e]=await Promise.all([api("/models/groups"+(refresh?"?refresh=1":"")),hostAPI("/oauth-excluded-models")]);
     if(epoch!==modelEpoch)return false;
     const groups=validateGroups(g), exclusions=exclusionMap(e);
-    modelGroupsData=groups;modelExclMap=exclusions;modelRowOrder=[...(g.model_order||[])];modelEdits.clear();
-    modelCtlLoaded=true;modelStateValid=true;renderPromotions(g.promotions);
+    if(catalogEpoch===modelCatalogEpoch){modelGroupsData=groups;modelRowOrder=[...(g.model_order||[])];renderPromotions(g.promotions);}
+    modelExclMap=exclusions;modelEdits.clear();modelCtlLoaded=true;modelStateValid=true;
     modelStatus("拖拽排序 · 隐藏 / 恢复自动保存");renderModelGroups();return true;
   }catch(err){
     if(epoch!==modelEpoch)return false;
-    if(modelGroupsData)modelGroupsData={...modelGroupsData,groups:modelGroupsData.groups.map(group=>({...group,models:(group.models||[]).map(model=>({...model,multiplier:null,multiplier_state:"stale"}))}))};
-    modelStateValid=false;renderPromotions(promotionsData?{...promotionsData,status:"unknown",items:(promotionsData.items||[]).map(item=>({...item,snapshot_stale:true}))}:null);modelStatus("读取失败，请刷新目录核实："+(err.message||String(err)),true);
+    if(catalogEpoch===modelCatalogEpoch&&modelGroupsData)modelGroupsData={...modelGroupsData,groups:modelGroupsData.groups.map(group=>({...group,models:(group.models||[]).map(model=>({...model,multiplier:null,multiplier_state:"stale"}))}))};
+    modelStateValid=false;if(catalogEpoch===modelCatalogEpoch)renderPromotions(promotionsData?{...promotionsData,status:"unknown",items:(promotionsData.items||[]).map(item=>({...item,snapshot_stale:true}))}:null);modelStatus("读取失败，请刷新目录核实："+(err.message||String(err)),true);
     if(modelGroupsData)renderModelGroups();else document.getElementById("modelGroupsBox").innerHTML='<div class="loading">模型信息暂不可用</div>';
     return false;
   }finally{if(epoch===modelEpoch){modelLoading=false;document.getElementById("modelRefreshBtn").disabled=modelBusy;}}
@@ -827,7 +834,7 @@ function catalogRows(){
     for(const m of g.models||[]){
       const id=m.base_id||((g.realm==="solo"&&m.id.endsWith("-solo"))?m.id.slice(0,-5):(g.realm==="intl"&&m.id.endsWith("-intl"))?m.id.slice(0,-5):m.id);
       if(!rows.has(id))rows.set(id,{id,name:m.name||id,channels:{}});
-      rows.get(id).channels[g.realm]={...m,total:g.credentials};
+      rows.get(id).channels[g.realm]={...m,realm:g.realm,total:g.credentials,fetched_at:g.fetched_at};
     }
   }
   const rank=new Map(modelRowOrder.map((id,i)=>[id,i]));
@@ -840,21 +847,49 @@ function modelContextLabel(value){
   if(n>=1000)return String(n/1000)+"K";
   return String(n);
 }
+function modelPriceBoundaryPassed(m){
+  if(!promotionsData)return false;
+  const now=snapshotNow(promotionsData);
+  return (promotionsData.items||[]).some(item=>{
+    const models=Array.isArray(item.models)?item.models:[item.model_id||item.model];
+    if(!models.includes(m.id)&&(!m.base_id||!models.includes(m.base_id)))return false;
+    if(item.realm&&m.realm&&item.realm!==m.realm)return false;
+    return [item.next_change,item.end_at].some(value=>{const at=promoTimestamp(value);return Number.isFinite(at)&&at>promoTimestamp(promotionsData.server_time)&&now>=at});
+  });
+}
 function modelMultiplierLabel(m){
-  if(m.multiplier_state==='stale')return '待刷新';
+  if(m.multiplier_state==='stale'||modelPriceBoundaryPassed(m)){
+    const observed=[...new Set((Array.isArray(m.multipliers)?m.multipliers:[]).filter(n=>typeof n==='number'&&Number.isFinite(n)))];
+    return observed.length?observed.map(n=>n+'×').join(' / ')+'（快照'+(m.unknown_credentials>0?'；部分账号':'')+'）':'待刷新';
+  }
   if(m.multiplier_state==='different')return Array.isArray(m.multipliers)&&m.multipliers.length?m.multipliers.filter(n=>typeof n==='number'&&Number.isFinite(n)).map(n=>n+'×').join(' / ')+'（账号差异）':'账号差异';
-  if(m.multiplier_state==='unknown')return '未上报';
+  if(m.multiplier_state==='unknown'){
+    const observed=(Array.isArray(m.multipliers)?m.multipliers:[]).filter(n=>typeof n==='number'&&Number.isFinite(n));
+    return observed.length?[...new Set(observed)].map(n=>n+'×').join(' / ')+'（快照；部分账号）':'未上报';
+  }
   return typeof m.multiplier==='number'&&Number.isFinite(m.multiplier)?m.multiplier+'×':'未上报';
 }
 function modelChannelCell(realm,m){
   if(!m)return '<span class="mg-meta">—</span>';
-  const contexts=[...new Set((m.context_lengths&&m.context_lengths.length?m.context_lengths:m.context_length>0?[m.context_length]:[]).map(Number).filter(n=>Number.isFinite(n)&&n>0))];
-  // Highlight an explicit default or the sole current CPA-declared limit; never choose among account differences.
-  const defaultContext=Number(m.default_context_length);
-  const ctx=contexts.length?contexts.map(n=>`<span${n===defaultContext||(contexts.length===1&&Number(m.context_length)===n)?' class="ctx-default"':''}>${esc(modelContextLabel(n))}</span>`).join(' / '):'未上报';
-  const thoughts=Array.isArray(m.thinking_options)?m.thinking_options:(typeof m.thinking==='string'||typeof m.thinking==='boolean')?[m.thinking]:[];
-  const thinking=thoughts.length?thoughts.map(v=>`<span${m.default_thinking!=null&&v===m.default_thinking?' class="thinking-default"':''}>${esc(typeof v==='boolean'?(v?'开启':'关闭'):v)}</span>`).join(' / '):'未上报';
-  const detail=m.id+" · 倍率 "+modelMultiplierLabel(m)+" · "+(m.credentials||0)+"/"+(m.total||0)+" 凭证记录"+(contexts.length?" · 上下文 "+contexts.join(" / ")+" tokens":"")+(contexts.length>1?" · 账号差异":"");
+  const facts=Array.isArray(m.facts)?m.facts:[],catalog=facts.flatMap(f=>Array.isArray(f.capability_catalog)?f.capability_catalog:[]);
+  const positive=values=>[...new Set(values.map(Number).filter(n=>Number.isFinite(n)&&n>0))].sort((a,b)=>a-b);
+  const effective=positive(Array.isArray(m.context_lengths)&&m.context_lengths.length?m.context_lengths:[m.context_length]);
+  const references=facts.flatMap(f=>Object.values(f.contexts||{})).concat(catalog.flatMap(c=>[...Object.values(c.contexts||{}),...Object.values(c.context_options||{}).flat()]));
+  const contexts=positive([...effective,...references]),declared=Number(m.context_length);
+  // Reference catalog tiers are not mode switches. Only a single effective
+  // CPA declaration may be emphasized; never choose among account differences.
+  const ctx=contexts.length?contexts.map(n=>`<span${effective.length===1&&n===declared?' class="ctx-default"':''}>${esc(modelContextLabel(n))}</span>`).join(' / '):'未上报';
+  const explicitThinking=(typeof m.thinking==='boolean'||typeof m.thinking==='string'&&m.thinking!=='')&&m.thinking_state!=='unknown'&&m.thinking_state!=='different';
+  const thoughts=[...new Set([...(Array.isArray(m.thinking_options)?m.thinking_options:[]),...(explicitThinking?[m.thinking]:[])].filter(v=>typeof v==='boolean'||typeof v==='string'))];
+  const thinking=thoughts.length?thoughts.map(v=>`<span${explicitThinking&&v===m.thinking?' class="thinking-default"':''}>${esc(typeof v==='boolean'?(v?'开启':'关闭'):v)}</span>`).join(' / '):'未上报';
+  const evidence=facts.map(f=>f.context_evidence).filter(e=>e&&e.kind==='verified_input'&&Number(e.observed_input_tokens)>0);
+  const referenceThinking=[...new Set(catalog.flatMap(c=>Array.isArray(c.thinking_options)?c.thinking_options:[]))];
+  const detail=m.id+' · 倍率 '+modelMultiplierLabel(m)+' · '+(m.credentials||0)+'/'+(m.total||0)+' 凭证记录'+
+    (contexts.length?' · 目录档位（上游参考）；加粗为当前CPA声明，非模式开关':'')+
+    (effective.length?' · CPA声明 '+effective.map(modelContextLabel).join(' / ')+(effective.length>1?'（账号差异）':''):'')+
+    (evidence.length?' · 已实测输入 '+Math.max(...evidence.map(e=>Number(e.observed_input_tokens)))+' tokens':'')+
+    (referenceThinking.length?' · 上游思考参考 '+referenceThinking.join(' / ')+'（非当前默认）':'')+
+    (m.fetched_at?' · 快照 '+promoTime(m.fetched_at,''):'');
   return `<div class="realm-cell" title="${escAttr(detail)}"><div class="realm-facts"><span>倍率 ${esc(modelMultiplierLabel(m))}</span><span>思考 ${thinking}</span><span>上下文 ${ctx}</span></div></div>`;
 }
 function modelChannelAction(realm,m){
@@ -894,14 +929,45 @@ async function modelOrderSave(){
   modelBusy=true;const epoch=++modelEpoch;modelStatus("正在保存排序并回读…");renderModelGroups();
   try{
     await hostAPI("/plugins/"+providerName+"/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_order:ids})});
+    const catalogEpoch=++modelCatalogEpoch;
     const [config,runtime]=await Promise.all([hostAPI("/plugins/"+providerName+"/config"),api("/models/groups")]);
     if(epoch!==modelEpoch)return;
     validateGroups(runtime);
     if(!config||JSON.stringify(config.model_order)!==JSON.stringify(ids)||JSON.stringify(runtime.model_order)!==JSON.stringify(ids))throw Error("宿主或运行时回读顺序不一致");
-    modelGroupsData=runtime;modelRowOrder=[...runtime.model_order];renderPromotions(runtime.promotions);modelStatus("排序已保存并核实");toast("排序已保存并核实");
+    if(catalogEpoch===modelCatalogEpoch){modelGroupsData=runtime;renderPromotions(runtime.promotions);}
+    modelRowOrder=[...runtime.model_order];modelStatus("排序已保存并核实");toast("排序已保存并核实");
   }catch(e){
     if(epoch===modelEpoch){toast("排序未确认","err",e.message);await modelCtlLoad(false,true);modelStatus("排序未确认；"+(modelStateValid?"已重新读取当前设置":"请刷新目录核实"),true);}
   }finally{modelBusy=false;renderModelGroups()}
+}
+function authRefreshToast(response,synced){
+  const entries=response?[...(Array.isArray(response.results)?response.results:[]),...(Array.isArray(response.items)?response.items:[])]:[];
+  const statuses=response&&response.model_refresh?[response.model_refresh]:entries.map(x=>x.model_refresh).filter(Boolean);
+  const errors=entries.filter(x=>x.error);
+  if(errors.length){toast('账号刷新部分失败','warn',errors.length+' 个账号有错误'+(statuses.some(s=>s.error||s.updated===false||s.status==='partial')?'；模型目录亦未完整更新':'')+(!synced?'；目录回读失败':''));return;}
+  const failed=statuses.filter(s=>s.error||s.updated===false||s.status==='partial'||s.status==='failed');
+  if(failed.length){toast(statuses.some(s=>s.updated===true)?'凭证已刷新，模型目录部分更新':'凭证已刷新，模型目录未更新','warn',failed.map(s=>s.error||s.status||'待核实').join('；')+(!synced?'；目录回读失败':''));return;}
+  if(!synced){toast('凭证已刷新，模型目录回读失败','warn','当前显示旧快照，请手动核实');return;}
+  if(statuses.length&&statuses.every(s=>s.updated===true))toast('凭证与模型目录已刷新','ok');
+  else toast('凭证已刷新','ok','已同步目录快照；上游目录刷新状态未确认');
+}
+async function syncModelsAfterAuth(){
+  const epoch=++modelCatalogEpoch;
+  try{
+    // The credential endpoint owns upstream refresh. Read its persisted result
+    // exactly once, without refreshing peers or writing capability selections.
+    const groups=validateGroups(await api('/models/groups'));
+    if(epoch!==modelCatalogEpoch)return false;
+    modelGroupsData=groups;
+    if(!modelBusy)modelRowOrder=[...(groups.model_order||[])];
+    renderPromotions(groups.promotions);renderModelGroups();return true;
+  }catch(e){
+    if(epoch!==modelCatalogEpoch)return false;
+    if(modelGroupsData)modelGroupsData={...modelGroupsData,groups:modelGroupsData.groups.map(g=>({...g,models:(g.models||[]).map(m=>({...m,multiplier:null,multiplier_state:'stale'}))}))};
+    if(promotionsData)renderPromotions({...promotionsData,items:(promotionsData.items||[]).map(i=>({...i,snapshot_stale:true}))});
+    if(modelGroupsData)renderModelGroups();
+    modelStatus('目录回读失败：'+(e.message||String(e)),true);return false;
+  }
 }
 async function modelGroupsRefresh(){
   if(modelBusy||modelLoading)return;
@@ -948,7 +1014,11 @@ async function modelGroupsSave(){
     if(epoch===modelEpoch){modelEdits.clear();toast("隐藏设置未确认","err",e.message);await modelCtlLoad(false,true);modelStatus("隐藏设置未确认；"+(modelStateValid?"已重新读取当前设置":"请刷新目录核实"),true);}
   }finally{modelBusy=false;renderModelGroups()}
 }
-let promotionsData=null;
+let promotionsData=null,promotionsReceivedAt=0;
+function snapshotNow(data){
+  const server=promoTimestamp(data&&data.server_time);
+  return Number.isFinite(server)?server+Math.max(0,Date.now()-promotionsReceivedAt):Date.now();
+}
 function promoTimestamp(value){return typeof value==='number'?value*1000:typeof value==='string'&&value?Date.parse(value):NaN;}
 function promoTime(value,zone){
   if(value==null||value==='')return '';
@@ -975,10 +1045,13 @@ function promoState(item,data){
   const states=['active','upcoming','expired','ended','inactive','unknown'];
   // The server owns timezone/window evaluation. No local-time activation guesses.
   const status=states.includes(item.status)?item.status:'unknown';
-  const now=promoTimestamp(data.server_time),end=promoTimestamp(item.end_at);
-  if(Number.isFinite(now)&&Number.isFinite(end)&&now>=end)return 'expired';
+  const now=snapshotNow(data),end=promoTimestamp(item.end_at),boundary=promoTimestamp(item.next_change);
+  if(Number.isFinite(end)&&now>=end)return 'expired';
   if(status==='expired'||status==='ended')return status;
   if(item.snapshot_stale===true)return 'unknown';
+  // A past boundary invalidates the observed state; do not infer activation,
+  // a new price or timezone/window behavior without another server snapshot.
+  if(Number.isFinite(boundary)&&now>=boundary)return 'unknown';
   return status;
 }
 function groupedPromotions(data){
@@ -990,8 +1063,9 @@ function groupedPromotions(data){
     const key=JSON.stringify({realm:item.realm,models:item.models||[item.model_id||item.model||''],title:item.title,kind:item.kind,state,
       discount_type:item.discount_type,discount_percent:item.discount_percent,factor:item.factor,multiplier:item.multiplier,base_multiplier:item.base_multiplier,
       start_at:item.start_at,end_at:item.end_at,time_zone:item.time_zone,time_windows:item.time_windows,status_reason:item.status_reason,next_change:item.next_change});
-    if(!groups.has(key))groups.set(key,{...item,_state:state,_scopes:new Set()});
+    if(!groups.has(key))groups.set(key,{...item,_state:state,_scopes:new Set(),_fetched:new Set()});
     if(typeof item.account_scope==='string'&&item.account_scope)groups.get(key)._scopes.add(item.account_scope);
+    if(item.fetched_at)groups.get(key)._fetched.add(item.fetched_at);
   }
   const rank={active:0,upcoming:1,inactive:2,unknown:3,expired:4,ended:4};
   return [...groups.values()].sort((a,b)=>rank[a._state]-rank[b._state]);
@@ -1008,36 +1082,48 @@ function promoRow(item,zone){
   const range=[item.start_at?promoTime(item.start_at,timeZone)+' 起':'',item.end_at?promoTime(item.end_at,timeZone)+' 止':''].filter(Boolean).join(' → ');
   const schedule=[windows,range,timeZone,item.next_change?'下次变化 '+promoTime(item.next_change,timeZone):''].filter(Boolean).join(' · ');
   const scopes=[...item._scopes];
-  return `<div class="promo-row ${on?'on':'off'}"><span class="promo-badge${on?' on':''}">${esc(title)}</span><span class="promo-model" title="${escAttr(models)}">${esc(models||'范围未上报')}</span><span class="promo-price">${esc(price)}</span><span class="promo-realm" title="${escAttr(scopes.join(' / '))}">${esc(({cn:'CN',solo:'SOLO',intl:'Intl'})[item.realm]||item.realm||'范围待核实')}${scopes.length?' · '+scopes.length+' 个账号':''}</span><span class="promo-state${on?' on':''}">${label}${schedule?'<br>'+esc(schedule):''}</span></div>`;
+  return `<div class="promo-row ${on?'on':'off'}"><span class="promo-badge${on?' on':''}">${esc(title)}</span><span class="promo-model" title="${escAttr(models)}">${esc(models||'范围未上报')}</span><span class="promo-price" title="${escAttr('快照时间 '+([...item._fetched].map(t=>promoTime(t,'')).join(' / ')||'未上报'))}">${esc(price)}${state==='unknown'?'（快照）':''}</span><span class="promo-realm" title="${escAttr(scopes.join(' / '))}">${esc(({cn:'CN',solo:'SOLO',intl:'Intl'})[item.realm]||item.realm||'范围待核实')}${scopes.length?' · '+scopes.length+' 个账号':''}</span><span class="promo-state${on?' on':''}">${label}${schedule?'<br>'+esc(schedule):''}</span></div>`;
 }
 function renderPromotions(data){
+  if(data!==promotionsData)promotionsReceivedAt=Date.now();
   promotionsData=data||{status:'unknown',items:[]};data=promotionsData;
   const items=groupedPromotions(data),active=items.filter(i=>i._state==='active').length,known=data.status==='known';
   const inactive=items.filter(i=>i._state==='upcoming'||i._state==='inactive').length,unknown=items.filter(i=>i._state==='unknown').length;
   const count=document.getElementById('promoCount');count.textContent=known||items.length?active+' 个进行中 · '+inactive+' 未生效 · '+unknown+' 待核实'+(!known?' · 覆盖待核实':''):'待核实';count.className='promo-live'+(active?'':' zero');
   const zone=data.time_zone||data.timezone||'';
-  document.getElementById('promoMeta').textContent=(data.server_time?'服务器 '+promoTime(data.server_time,zone)+(zone?' · '+zone:'')+' · ':'')+(known?'活动快照':items.length?'活动快照 · 覆盖待核实':'活动信息未上报');
+  const fetched=(data.items||[]).map(item=>promoTimestamp(item.fetched_at)).filter(Number.isFinite).sort((a,b)=>a-b);
+  const snapshot=fetched.length?'快照时间 '+promoTime(fetched[0]/1000,zone)+(fetched.at(-1)!==fetched[0]?' — '+promoTime(fetched.at(-1)/1000,zone):''):'快照时间未上报';
+  document.getElementById('promoMeta').textContent=snapshot+(data.server_time?' · 读取时间 '+promoTime(data.server_time,zone):'')+(zone?' · '+zone:'')+' · '+(known?'活动快照':items.length?'活动快照 · 覆盖待核实':'活动信息未上报');
   const rows=items.map(item=>promoRow(item,zone));
   document.getElementById('promoList').innerHTML=rows.slice(0,6).join('')+(rows.length>6?`<details id="promoMore"><summary class="promo-meta">展开其余 ${rows.length-6} 项</summary><div class="promo-list">${rows.slice(6).join('')}</div></details>`:'')||(known?'<div class="promo-meta">当前快照未列出活动</div>':'<div class="promo-meta">待上游提供可核实信息</div>');
 }
-// Only metadata GETs: never couple login polling or check-in to this timer.
-let modelMetadataAttemptAt=0,modelInitialRefreshTried=false,modelHandledBoundary=0;
-async function refreshModelMetadata(initial=false){
-  if(document.hidden||modelBusy||modelLoading)return;
-  const now=Date.now();
-  const boundaries=((promotionsData&&promotionsData.items)||[]).map(i=>promoTimestamp(i.next_change)).filter(n=>Number.isFinite(n)&&n<=now&&n>modelHandledBoundary);
-  const boundary=boundaries.length?Math.max(...boundaries):0;
-  const needInitial=initial&&!modelInitialRefreshTried&&(!promotionsData||promotionsData.status!=='known');
-  if(!needInitial&&!boundary&&now-modelMetadataAttemptAt<15*60*1000)return;
-  modelInitialRefreshTried=true;modelMetadataAttemptAt=now;if(boundary)modelHandledBoundary=boundary;
-  await modelCtlLoad(true);
+// Local presentation only. Scheduled upstream discovery belongs to the backend;
+// neither page startup, unknown metadata, visibility nor a time boundary fetches it.
+function minuteTick(){
+  if(document.hidden)return;
+  if(promotionsData){
+    const more=document.getElementById('promoMore'),expanded=more&&more.open;
+    renderPromotions(promotionsData);
+    const next=document.getElementById('promoMore');if(next&&expanded)next.open=true;
+  }
+  // Refresh readonly cells only, so a local clock tick cannot detach a focused
+  // hide control or an in-progress drag handle.
+  if(modelGroupsData&&!modelBusy&&!modelLoading){
+    const rows=catalogRows();
+    document.getElementById('modelGroupsBox').querySelectorAll('[data-model-id]').forEach(row=>{
+      const model=rows.find(m=>m.id===row.dataset.modelId);if(!model)return;
+      let index=0;
+      for(const realm of ['cn','solo','intl'])if(model.channels[realm]){
+        const cell=row.querySelectorAll('.realm-cell')[index++],wrapper=document.createElement('div');
+        wrapper.innerHTML=modelChannelCell(realm,model.channels[realm]);
+        if(cell&&wrapper.firstChild)cell.replaceWith(wrapper.firstChild);
+      }
+    });
+  }
 }
-async function startModelMetadata(){
-  modelMetadataAttemptAt=Date.now();
-  if(await modelCtlLoad())await refreshModelMetadata(true);
-}
-setInterval(()=>refreshModelMetadata(),60000);
-if(document.addEventListener)document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshModelMetadata()});
+async function startModelMetadata(){return modelCtlLoad();}
+setInterval(minuteTick,60000);
+if(document.addEventListener)document.addEventListener('visibilitychange',minuteTick);
 let autoCheckinEpoch=0,autoCheckinBusy=false,autoCheckinKnown=false,autoCheckinValue=true;
 function configuredCheckin(config){if(!config||typeof config!=="object"||Array.isArray(config)||config.error)throw Error("自动签到配置未返回");if(config.checkin_auto!=null&&typeof config.checkin_auto!=="boolean")throw Error("自动签到配置格式异常");return config.checkin_auto!==false;}
 async function loadAutoCheckin(){

@@ -29,6 +29,8 @@ const modelCacheDocKey = "model_cache"
 // headers) — every plugin-side rewrite used to reset them to defaults.
 var preservedPluginDocKeys = []string{
 	modelCacheDocKey,
+	modelRefreshStateDocKey,
+	"model_context_evidence",
 	"proxy_url",
 	"weight",
 	"priority",
@@ -40,6 +42,7 @@ var preservedPluginDocKeys = []string{
 
 // persistedModelCache is the on-disk snapshot shape.
 type persistedModelCache struct {
+	SchemaVersion int `json:"schema_version,omitempty"`
 	// Realm is the variant namespace the catalog was discovered under
 	// ("cn" | "solo" | "intl").
 	Realm string `json:"realm"`

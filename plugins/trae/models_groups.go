@@ -77,6 +77,7 @@ type variantCatalogEntry struct {
 	variant  string
 	hasToken bool
 	disabled bool
+	index    string // durable host identity
 	name     string // host file name — drives the refresh persist path
 	storage  []byte // physical credential document (read-only view)
 	snapshot *persistedModelCache
@@ -110,6 +111,7 @@ func handleModelGroupsQuery(req pluginapi.ManagementRequest) (int, any) {
 			disabled: f.Disabled || flags.Disabled,
 			hasToken: strings.TrimSpace(extractTraeAccessToken(phys)) != "",
 			name:     f.Name,
+			index:    f.AuthIndex,
 			storage:  phys,
 		}
 		if c := readModelCacheDoc(phys); c != nil && c.Realm == variant {
@@ -143,7 +145,7 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 		var models []pluginapi.ModelInfo
 		if e.snapshot != nil {
 			models = e.snapshot.Models
-			if g.Source != "queried" {
+			if g.Source != "refreshed" {
 				g.Source = "snapshot"
 			}
 			if e.snapshot.FetchedAt > g.FetchedAt {
@@ -151,14 +153,19 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 			}
 		}
 		if refresh && e.hasToken && !e.disabled {
-			if fresh := refreshVariantCatalog(e); len(fresh) > 0 {
-				models = fresh
-				// A refresh can legitimately return last-good; do not relabel it fresh.
-				g.Source = "queried"
-				reloadCatalogSnapshot(e)
-				if e.snapshot != nil && e.snapshot.FetchedAt > g.FetchedAt {
-					g.FetchedAt = e.snapshot.FetchedAt
+			result := refreshAccountModels(e.index, true)
+			if result.Updated {
+				models = result.Models
+				g.Source = "refreshed"
+				if result.Status == "partial" {
+					g.Note = "主模型目录已更新，辅助能力目录暂不可用"
 				}
+				reloadCatalogSnapshot(e)
+				if result.FetchedAt > g.FetchedAt {
+					g.FetchedAt = result.FetchedAt
+				}
+			} else if result.Error != "" {
+				g.Note = "目录刷新失败，保留该账号最近目录: " + result.Error
 			}
 		}
 		seen := map[string]bool{}
@@ -207,7 +214,7 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 	enrichModelGroup(&g, entries, time.Now())
 	g.Count = len(g.Models)
 	g.NeedsRefresh = g.Count == 0
-	if refresh {
+	if refresh && g.Note == "" {
 		g.Note = "已逐凭证查询（跳过禁用账号）；失败时仅保留各自最近目录，候选汇总不代表每个账号均有权限"
 	}
 	if g.Count == 0 {
@@ -221,21 +228,21 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 // intl chain, cn/solo the solo_work_lite lane) — pre-exclusion, so the
 // picker can also un-exclude.
 func refreshVariantCatalog(pick *variantCatalogEntry) []pluginapi.ModelInfo {
-	if pick == nil || len(pick.storage) == 0 {
+	if pick == nil {
 		return nil
 	}
-	if pick.variant == variantIntl {
-		a, err := intlparseStoredAuth(pick.storage)
-		if err != nil {
-			return nil
-		}
-		return intlmodelCatalogForAuth(pick.storage, pick.name, a)
+	index := pick.index
+	if index == "" {
+		index = modelAuthIndexForStorage(pick.storage)
 	}
-	a, err := parseStoredAuth(pick.storage)
-	if err != nil {
+	if index == "" {
 		return nil
 	}
-	return modelsForVariant(a, pick.storage)
+	result := refreshAccountModels(index, true)
+	if !result.Updated {
+		return nil
+	}
+	return result.Models
 }
 
 // modelGroupEntries projects ModelInfos into picker rows (id + display name).

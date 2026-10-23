@@ -489,44 +489,13 @@ func configIsSoloAgentOnly(configName string) bool {
 // 模型选择器同样展示它们）。可布尔字段用指针判缺失：上游省略时按
 // 可见/启用处理，避免字段缺省把整个目录过滤空。
 func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
-	body := map[string]any{
-		"function":            FunctionFor(a.Variant),
-		"config_names":        nil,
-		"need_prompt":         false,
-		"current_config_info": nil,
-		"poly_prompt":         true,
-		"mode_type":           nil,
-		"agent_type":          nil,
-	}
-	raw, _ := json.Marshal(body)
-	req, err := http.NewRequest(http.MethodPost, c.agentBase()+EpModels, bytes.NewReader(raw))
+	function := FunctionFor(a.Variant)
+	rows, err := c.fetchModelCatalog(a, function)
 	if err != nil {
 		return nil, err
 	}
-	SOLOHeaders(req, a, false)
-	data, err := c.doJSON(req)
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		ConfigInfoList []struct {
-			ConfigName           string          `json:"config_name"`
-			DisplayContactConfig json.RawMessage `json:"display_contact_config"`
-			NewVersion           json.RawMessage `json:"new_version"`
-			Newversion           json.RawMessage `json:"newversion"`
-			ConfigSwitch         *bool           `json:"config_switch"`
-			IsInvisibleToUser    *bool           `json:"is_invisible_to_user"`
-			ContextWindowTokens  json.RawMessage `json:"context_window_tokens"`
-			DisplayConfig        struct {
-				DisplayName string `json:"display_name"`
-			} `json:"display_config"`
-		} `json:"config_info_list"`
-	}
-	if err := json.Unmarshal(data, &resp); err != nil {
-		return nil, fmt.Errorf("models parse: %w", err)
-	}
-	out := make([]ModelInfo, 0, len(resp.ConfigInfoList))
-	for _, cfg := range resp.ConfigInfoList {
+	out := make([]ModelInfo, 0, len(rows))
+	for _, cfg := range rows {
 		if cfg.ConfigName == "" {
 			continue
 		}
@@ -548,9 +517,16 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		if len(version) == 0 {
 			version = cfg.Newversion
 		}
-		contexts := parseModelContexts(cfg.ContextWindowTokens)
+		capability := modelCapability(cfg, function)
+		contexts := capability.Contexts
 		facts := parseModelFacts(cfg.DisplayContactConfig, contexts["dev"], version)
 		facts.Contexts = contexts
+		facts.CapabilityCatalog = []ModelCapability{capability}
+		facts.CapabilityStatus = "complete"
+		if capability.ThinkingDefault != "" {
+			facts.Thinking = capability.ThinkingDefault
+			facts.ThinkingState = "known"
+		}
 		out = append(out, ModelInfo{
 			ID:            cfg.ConfigName,
 			Name:          cfg.DisplayConfig.DisplayName,
@@ -561,6 +537,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned no user-facing models")
 	}
+	c.enrichCapabilities(a, out)
 	return out, nil
 }
 

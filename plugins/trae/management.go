@@ -952,14 +952,24 @@ func max64(a, b int64) int64 {
 	return b
 }
 
-// handleRefresh forces an ExchangeToken refresh on every account whose token
-// is within the refresh skew of expiry. Updates host-stored auth via host.auth.save
-// is the host's responsibility (we only mutate the in-memory Auth and trigger
-// upstream refresh); the next host.auth.refresh RPC will persist the new tokens.
+// refreshAccount saves any required token rotation before releasing the account
+// lock and refreshing its model catalog. Catalog failures remain separate from
+// the original refreshed/token status.
 func refreshAccount(index string, refreshToken bool) map[string]any {
-	unlock := accountOperationLock(index)
-	defer unlock()
 	entry := map[string]any{"auth_index": index}
+	unlock := accountOperationLock(index)
+	// Release the credential lock before the model flight. Model errors must
+	// never turn a successfully rotated token into an auth-refresh failure.
+	defer func() {
+		unlock()
+		if refreshToken && entry["refreshed"] != nil {
+			result := refreshAccountModels(index, true)
+			entry["model_refresh"] = result
+			if result.Error != "" {
+				entry["model_refresh_error"] = result.Error
+			}
+		}
+	}()
 	s, err := freshAuthSnapshot(index)
 	if err != nil {
 		entry["error"] = err.Error()
@@ -978,7 +988,7 @@ func refreshAccount(index string, refreshToken bool) map[string]any {
 		}
 		entry["refreshed"] = refreshed
 	}
-	ce := refreshAccountCredits(s.File, s.Stored, s.Auth)
+	ce := modelRefreshCreditsFn(s.File, s.Stored, s.Auth)
 	for k, v := range ce {
 		if k != "_observed_at" {
 			entry[k] = v

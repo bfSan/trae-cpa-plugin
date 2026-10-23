@@ -10,18 +10,21 @@ import (
 // ModelFacts contains only allowlisted model metadata, never auth or headers.
 // Multiplier is already the payable rate: do NOT apply DiscountPercent again.
 type ModelFacts struct {
-	Multiplier         *float64         `json:"multiplier"`
-	BaseMultiplier     *float64         `json:"base_multiplier"`
-	ReportedMultiplier *float64         `json:"reported_multiplier"`
-	Thinking           any              `json:"thinking"`
-	ThinkingState      string           `json:"thinking_state"`
-	ThinkingSupported  *bool            `json:"thinking_supported"`
-	Context            int64            `json:"context,omitempty"`
-	NewVersion         string           `json:"new_version,omitempty"`
-	MetadataState      string           `json:"metadata_state"`
-	PromotionsState    string           `json:"promotions_state"`
-	Contexts           map[string]int64 `json:"contexts,omitempty"`
-	Promotions         []ModelPromotion `json:"promotions"`
+	Multiplier         *float64          `json:"multiplier"`
+	BaseMultiplier     *float64          `json:"base_multiplier"`
+	ReportedMultiplier *float64          `json:"reported_multiplier"`
+	Thinking           any               `json:"thinking"`
+	ThinkingState      string            `json:"thinking_state"`
+	ThinkingSupported  *bool             `json:"thinking_supported"`
+	Context            int64             `json:"context,omitempty"`
+	NewVersion         string            `json:"new_version,omitempty"`
+	MetadataState      string            `json:"metadata_state"`
+	PromotionsState    string            `json:"promotions_state"`
+	Contexts           map[string]int64  `json:"contexts,omitempty"`
+	Promotions         []ModelPromotion  `json:"promotions"`
+	CapabilityCatalog  []ModelCapability `json:"capability_catalog,omitempty"`
+	CapabilityStatus   string            `json:"capability_status,omitempty"`
+	ContextEvidence    *ContextEvidence  `json:"context_evidence,omitempty"`
 }
 
 type ModelPromotion struct {

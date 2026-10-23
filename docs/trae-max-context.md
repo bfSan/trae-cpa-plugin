@@ -1,5 +1,7 @@
 # Trae Max 上下文与思考档位：只读协议研究
 
+> 后续实测更新（0.13.2）：原通道 `solo_work_lite` 已成功处理 990,767 输入 token，无 Max 开关也三位置检索全对；“要大输入必须切换 agent”不再成立。本文保留此前各协议调查的历史证据，不代表当前发布能力。最新实施见 [每日目录刷新与上下文证据](model-catalog-refresh.md)。
+
 研究日期：2026-10-23（Asia/Shanghai）。范围：CN / SOLO 当前 `llm_utils_chat + solo_work_lite`、官方 `solo_agent` 目录、官方 Web remote 请求链，以及插件 Intl 的实现差异。
 
 > **结论：官方 DeepSeek-V4.1-Flash 确有 1M Max，上游能力依 function / 通道而异。当前插件 CN 通道尚未找到可验证的 Max 请求契约，不能仅把目录改成 solo_agent、把 CPA 上下文改成 1M，或传 `max_tokens=1000000` 来宣称支持。**

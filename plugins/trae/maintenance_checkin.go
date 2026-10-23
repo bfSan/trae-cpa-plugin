@@ -280,10 +280,9 @@ func maintenanceRun(ctx context.Context) {
 			if daily {
 				nextCheckin = nextMaintenanceCheckin(now)
 			}
+			// Model refresh is independent of check-in/token keepalive switches.
+			refreshModelCatalogsDaily(ctx, now)
 			auto, keepalive := maintenanceEnabled()
-			if !auto && !keepalive {
-				continue
-			}
 			files, err := maintenanceAuthList()
 			if err != nil {
 				continue

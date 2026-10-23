@@ -33,12 +33,13 @@ class Element {
 }
 function parse(markup,root){const stack=[root];for(const match of markup.matchAll(/<!--[\s\S]*?-->|<\/?[a-zA-Z][^>]*>|[^<]+/g)){const token=match[0];if(token.startsWith('<!--'))continue;if(token.startsWith('</')){stack.pop();continue;}if(token[0]==='<'){const tag=token.match(/^<([\w-]+)/)[1];const el=new Element(tag,root.ownerDocument);for(const [,k,v1,v2,v3]of token.slice(tag.length+1,-1).matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g))el.setAttribute(k,decode(v1??v2??v3??''));stack.at(-1).appendChild(el);if(!/^(input|br|hr|meta|link|img)$/i.test(tag)&&!token.endsWith('/>'))stack.push(el);}else{const node=new Element('#text',root.ownerDocument);node.text=decode(token);stack.at(-1).appendChild(node);}}}
 function harness(){
- const document={createElement:tag=>new Element(tag,document)};
+ const intervals=[],listeners={};
+ const document={createElement:tag=>new Element(tag,document),addEventListener(type,fn){(listeners[type]??=[]).push(fn);}};
  const root=new Element('body',document);root.innerHTML=html.match(/<body>([\s\S]*?)<script>/)[1];
  document.getElementById=id=>root.querySelector('#'+id);document.querySelector=s=>root.querySelector(s);document.querySelectorAll=s=>root.querySelectorAll(s);
- const context=vm.createContext({document,window:{location:{pathname:'/v0/resource/plugins/trae/panel',search:'',host:'test'}},navigator:{},sessionStorage:{getItem(){return null},setItem(){},removeItem(){}},setInterval(){},clearInterval(){},setTimeout(){},clearTimeout(){},requestAnimationFrame:fn=>fn(),TextEncoder,TextDecoder,URL,URLSearchParams,Intl,console,CSS:{escape:v=>v},fetch(){throw Error('unexpected network')},confirm(){return false},prompt(){return null}});
+ const context=vm.createContext({document,window:{location:{pathname:'/v0/resource/plugins/trae/panel',search:'',host:'test'}},navigator:{},sessionStorage:{getItem(){return null},setItem(){},removeItem(){}},setInterval(fn,ms){intervals.push({fn,ms});},clearInterval(){},setTimeout(){},clearTimeout(){},requestAnimationFrame:fn=>fn(),TextEncoder,TextDecoder,URL,URLSearchParams,Intl,console,CSS:{escape:v=>v},fetch(){throw Error('unexpected network')},confirm(){return false},prompt(){return null}});
  document.context=context;vm.runInContext(source,context);vm.runInContext('var messages=[];toast=(...args)=>messages.push(args);',context);
- return {context,document,element:document.getElementById,run:code=>vm.runInContext(code,context)};
+ return {context,document,intervals,listeners,element:document.getElementById,run:code=>vm.runInContext(code,context)};
 }
 const catalog=`modelGroupsData={model_order:['a','b'],groups:[{realm:'cn',credentials:2,models:[{id:'a',name:'Alpha',context_length:64000,context_lengths:[64000],credentials:2},{id:'b'}]},{realm:'solo',credentials:1,models:[{id:'a-solo',base_id:'a',context_lengths:[64000,128000],credentials:1}]}]};modelRowOrder=['a','b'];modelExclMap={};modelStateValid=true;renderModelGroups();`;
 const plain = v => JSON.parse(JSON.stringify(v));
@@ -73,10 +74,15 @@ test('model DOM uses rounded row grid, three facts, pills and per-realm actions 
  const h=harness();h.run(catalog);const rows=h.element('modelGroupsBox').querySelectorAll('.model-row');assert.equal(rows.length,2);assert.equal(rows[0].querySelectorAll('.realm-facts').length,2);assert.equal(rows[0].querySelectorAll('[data-model-toggle]').length,2);assert.equal(h.element('modelGroupsBox').querySelectorAll('input').length,0);assert.equal(rows[0].querySelector('.drag-handle').getAttribute('draggable'),'true');
  assert.equal(h.run('catalogRows().length'),2);assert.match(rows[0].textContent,/倍率 未上报思考 未上报上下文 64K/);
 });
-test('known current context or explicit default highlight; multi-account lengths and unknown never guessed',()=>{
+test('only effective CPA context and evidenced thinking emphasize; tiers stay readonly',async()=>{
  const h=harness();h.run(catalog);const rows=h.element('modelGroupsBox').querySelectorAll('.model-row');assert.equal(rows[0].querySelectorAll('.ctx-default').length,1);assert.equal(rows[0].querySelectorAll('.thinking-default').length,0);
- const target=h.element('modelGroupsBox');target.innerHTML=h.run(`modelChannelCell('cn',{id:'x',context_lengths:[64000,128000],default_context_length:128000,thinking_options:['off','on'],default_thinking:'on'})`);assert.equal(target.querySelector('.ctx-default').textContent,'128K');assert.equal(target.querySelector('.thinking-default').textContent,'on');
- target.innerHTML=h.run(`modelChannelCell('cn',{id:'x',context_lengths:[64000,128000],thinking:null})`);assert.equal(target.querySelectorAll('.ctx-default').length,0);assert.equal(target.querySelectorAll('.thinking-default').length,0);
+ const target=h.element('modelGroupsBox');target.innerHTML=h.run(`modelChannelCell('solo',{id:'deepseek-solo',context_length:1000000,context_lengths:[1000000],thinking:true,thinking_state:'known',facts:[{contexts:{dev:200000},context_evidence:{kind:'verified_input',observed_input_tokens:990767},capability_catalog:[{source_function:'reference',contexts:{dev:200000,max:1000000},thinking_options:['off','on'],thinking_default:'off'}]}]})`);
+ assert.match(target.textContent,/上下文 200K \/ 1M/);assert.equal(target.querySelector('.ctx-default').textContent,'1M');assert.equal(target.querySelector('.thinking-default').textContent,'开启');assert.match(target.querySelector('.realm-cell').getAttribute('title'),/当前CPA声明，非模式开关/);assert.match(target.querySelector('.realm-cell').getAttribute('title'),/已实测输入 990767 tokens/);
+ h.run(`var writes=0;api=hostAPI=async()=>{writes++;throw Error('unexpected write')};`);
+ for(const selector of ['button','[onclick]','[role="button"]','[tabindex]'])assert.equal(target.querySelectorAll(selector).length,0,selector);
+ for(const el of target.querySelectorAll('span')){assert.equal(el.onclick,undefined);await el.dispatch('click');assert.notEqual(el.style.cursor,'pointer');}assert.equal(h.run('writes'),0);
+ assert.doesNotMatch(html,/\.(?:realm-cell|realm-facts|ctx-default|thinking-default)[^{]*\{[^}]*cursor\s*:\s*pointer/);
+ target.innerHTML=h.run(`modelChannelCell('cn',{id:'x',context_length:128000,context_lengths:[64000,128000],default_context_length:128000,default_thinking:'on',thinking:null,facts:[{capability_catalog:[{thinking_options:['on'],thinking_default:'on'}]}]})`);assert.equal(target.querySelectorAll('.ctx-default').length,0);assert.equal(target.querySelectorAll('.thinking-default').length,0);assert.match(target.textContent,/思考 未上报/);
  assert.equal(h.run(`modelMultiplierLabel({multiplier_state:'unknown',multiplier:0.1})`),'未上报');assert.equal(h.run(`modelMultiplierLabel({multiplier_state:'stale',multiplier:0.1})`),'待刷新');assert.match(h.run(`modelMultiplierLabel({multiplier_state:'different',multipliers:[1,2]})`),/账号差异/);
 });
 test('hide click autosaves one channel, preserves unseen excludes, reads back without copying global locks',async()=>{
@@ -173,15 +179,63 @@ test('activity duplicates group only identical facts, preserve account price/win
  const h=harness();const base={title:'same',models:['m'],realm:'cn',status:'active',multiplier:0.5,time_zone:'Asia/Shanghai',time_windows:[{start_minute:0,end_minute:60}]};const data={status:'known',items:[{...base,account_scope:'a'},{...base,account_scope:'b'},{...base,account_scope:'c',multiplier:0.8},{...base,account_scope:'d',time_windows:[{start_minute:60,end_minute:120}]},...Array.from({length:6},(_,i)=>({title:'other'+i,models:['x'+i],status:i===0?'expired':'upcoming'}))]};
  h.run(`renderPromotions(${JSON.stringify(data)})`);assert.equal(h.run('groupedPromotions(promotionsData).length'),9);assert.match(h.element('promoList').textContent,/2 个账号/);assert.ok(h.element('promoMore'));assert.equal(h.element('promoMore').open,false);assert.match(h.element('promoMore').textContent,/展开其余 3 项/);assert.equal(h.element('promoList').children.filter(x=>x.className.includes('promo-row')).length,6);assert.equal(h.run('groupedPromotions(promotionsData).at(-1)._state'),'expired');assert.equal(h.run('groupedPromotions(promotionsData).filter(x=>x.multiplier===0.8).length'),1);
 });
-test('metadata polling pauses while hidden, triggers only GET refresh and handles a time boundary once',async()=>{
- const h=harness();h.run(`var reads=[];modelCtlLoad=async refresh=>{reads.push(refresh);return true};modelMetadataAttemptAt=Date.now();promotionsData={status:'known',items:[{next_change:new Date(Date.now()-1000).toISOString()}]};`);h.document.hidden=true;await h.run('refreshModelMetadata()');assert.equal(h.run('reads.length'),0);h.document.hidden=false;await h.run('refreshModelMetadata()');assert.equal(h.run('reads.length'),1);assert.equal(h.run('reads[0]'),true);await h.run('refreshModelMetadata()');assert.equal(h.run('reads.length'),1);h.run('modelMetadataAttemptAt=Date.now()-16*60*1000');await h.run('refreshModelMetadata()');assert.equal(h.run('reads.length'),2);
+test('startup unknown, timers, visibility and boundaries never fetch upstream or retry',async()=>{
+ const h=harness();h.run(`var calls=[];api=async(path,opts)=>{calls.push({path,opts});return {groups:[],promotions:{status:'unknown',items:[]}}};hostAPI=async()=>({'oauth-excluded-models':{}});`);await h.run('startModelMetadata()');assert.deepEqual(plain(h.run('calls')),[{path:'/models/groups'}]);
+ h.run(`renderPromotions({status:'unknown',items:[{next_change:new Date(Date.now()-1000).toISOString()}]});`);
+ const timer=h.intervals.find(x=>x.ms===60000);assert.ok(timer);for(let i=0;i<1500;i++)timer.fn();
+ h.document.hidden=true;timer.fn();h.document.hidden=false;for(const listener of h.listeners.visibilitychange)listener();
+ assert.deepEqual(plain(h.run('calls')),[{path:'/models/groups'}]);assert.doesNotMatch(source,/refreshModelMetadata|modelMetadataAttemptAt|modelInitialRefreshTried|15\*60\*1000/);
 });
-test('initial unknown metadata refresh is attempted once, failure clears stale payable multiplier',async()=>{
- const h=harness();h.run(`var reads=0;modelMetadataAttemptAt=Date.now();promotionsData={status:'unknown',items:[]};var originalLoad=modelCtlLoad;modelCtlLoad=async()=>{reads++;return false};`);await h.run('refreshModelMetadata(true)');await h.run('refreshModelMetadata(true)');assert.equal(h.run('reads'),1);
- h.run(catalog);h.run(`modelCtlLoad=originalLoad;modelGroupsData.groups[0].models[0].multiplier=0.5;modelGroupsData.groups[0].models[0].multiplier_state='known';api=async()=>{throw Error('offline')};hostAPI=async()=>({'oauth-excluded-models':{}});`);await h.run('modelCtlLoad(true)');assert.equal(h.run('modelGroupsData.groups[0].models[0].multiplier_state'),'stale');assert.match(h.element('modelGroupsBox').textContent,/倍率 待刷新/);
+test('manual refresh alone requests upstream; failure clears payable multiplier',async()=>{
+ const h=harness();h.run(catalog);h.run(`var calls=[];modelGroupsData.groups[0].models[0].multiplier=0.5;modelGroupsData.groups[0].models[0].multiplier_state='known';api=async path=>{calls.push(path);throw Error('offline')};hostAPI=async()=>({'oauth-excluded-models':{}});`);await h.element('modelRefreshBtn').dispatch('click');assert.deepEqual(plain(h.run('calls')),['/models/groups?refresh=1']);assert.equal(h.run('modelGroupsData.groups[0].models[0].multiplier_state'),'stale');assert.match(h.element('modelGroupsBox').textContent,/倍率 待刷新/);
+});
+test('elapsed snapshot time expires known schedule without inventing activation or fetching',()=>{
+ const h=harness();h.run(catalog);h.run(`var now=Date.parse('2026-10-23T00:00:00Z');Date.now=()=>now;modelGroupsData.groups[0].models[0].multiplier=0.5;modelGroupsData.groups[0].models[0].multiplier_state='known';renderPromotions({status:'known',server_time:'2026-10-23T00:00:00Z',items:[{model_id:'a',realm:'cn',status:'active',multiplier:0.5,next_change:'2026-10-23T00:01:00Z',end_at:'2026-10-23T00:03:00Z'},{status:'upcoming',next_change:'2026-10-23T00:01:00Z'}]});`);
+ const snapshot=h.element('promoMeta').textContent;assert.match(snapshot,/快照时间/);assert.match(h.element('promoCount').textContent,/1 个进行中/);h.run('now+=120000;minuteTick()');assert.match(h.element('promoCount').textContent,/0 个进行中 · 0 未生效 · 2 待核实/);assert.match(h.element('modelGroupsBox').textContent,/倍率 待刷新/);assert.equal(h.element('promoMeta').textContent,snapshot);h.run('now+=120000;minuteTick()');assert.match(h.element('promoList').textContent,/已结束/);
 });
 
 test('host explicit null exclusion map is valid empty state; uppercase IDs verify after host normalization',async()=>{
  const h=harness();assert.deepEqual(plain(h.run(`exclusionMap({'oauth-excluded-models':null})`)),{});assert.throws(()=>h.run('exclusionMap({})'),/未返回/);
  h.run(`modelGroupsData={groups:[{realm:'cn',models:[{id:'GPT-5'}]}]};modelStateValid=true;modelExclMap={};var map=null;hostAPI=async(path,opts)=>{if(opts)map={'trae-cn':['gpt-5']};return {'oauth-excluded-models':map};};renderModelGroups();`);await h.element('modelGroupsBox').querySelector('[data-model-toggle="GPT-5"]').dispatch('click');assert.match(h.run('messages[0][0]'),/已保存并核实/);assert.match(h.element('modelGroupsBox').textContent,/恢复/);
+});
+
+test('credential refresh reads model cache exactly once, synchronizes all facts, reports partial failure',async()=>{
+ for(const status of [{updated:true,status:'updated'},{updated:false,status:'error',error:'catalog unavailable'},null]){
+  const h=harness();h.run(catalog);h.run(`lastAccounts=[{auth_index:'one',variant:'cn'}];var calls=[];load=async()=>{};api=async(path,opts)=>{calls.push({path,opts});if(path==='/accounts/refresh')return {model_refresh:${JSON.stringify(status)}};if(path==='/models/groups')return {groups:[{realm:'cn',models:[{id:'a',context_length:1000000,multiplier:0.12,thinking:true}]}],model_order:['a'],promotions:{status:'known',items:[{status:'active',title:'New snapshot'}]}};throw Error('unexpected path')};`);
+  await h.run(`accountAction('token-refresh','one',null)`);const calls=plain(h.run('calls'));assert.deepEqual(calls.map(c=>c.path),['/accounts/refresh','/models/groups']);assert.equal(calls[0].opts.method,'POST');assert.equal(calls[1].opts,undefined);assert.match(h.element('modelGroupsBox').textContent,/上下文 1M/);assert.match(h.element('modelGroupsBox').textContent,/倍率 0.12×/);assert.match(h.element('modelGroupsBox').textContent,/思考 开启/);assert.match(h.element('promoList').textContent,/New snapshot/);
+  if(status&&status.updated===false){assert.match(h.run('messages[0][0]'),/凭证已刷新，模型目录未更新/);assert.equal(h.run('messages[0][1]'),'warn');assert.match(h.run('messages[0][2]'),/catalog unavailable/);}else if(status)assert.match(h.run('messages[0][0]'),/凭证与模型目录已刷新/);else assert.match(h.run('messages[0][2]'),/状态未确认/);
+ }
+});
+test('credential success with failed model readback remains partial and does not retry',async()=>{
+ const h=harness();h.run(catalog);h.run(`lastAccounts=[{auth_index:'one'}];var calls=[];load=async()=>{};api=async path=>{calls.push(path);if(path==='/accounts/refresh')return {model_refresh:{updated:true,status:'updated'}};throw Error('cache offline')};`);await h.run(`accountAction('token-refresh','one',null)`);assert.deepEqual(plain(h.run('calls')),['/accounts/refresh','/models/groups']);assert.match(h.run('messages[0][0]'),/凭证已刷新，模型目录回读失败/);assert.equal(h.run('messages[0][1]'),'warn');assert.match(h.element('modelGroupsBox').textContent,/待刷新/);h.run('minuteTick()');assert.equal(h.run('calls.length'),2);
+});
+test('toolbar refresh performs one model cache GET after refresh response, not before',async()=>{
+ const h=harness();h.run(catalog);h.run(`var calls=[],finish;loadAutoCheckin=async()=>{};lazyLoadCredits=()=>{};api=async(path,opts)=>{calls.push({path,opts});if(path==='/refresh'){await new Promise(r=>finish=r);return {accounts:[{auth_index:'one',variant:'cn'}],results:[{model_refresh:{updated:false,status:'error',error:'model failure'}}]}};if(path==='/intl/accounts')return {accounts:[]};if(path==='/models/groups')return {groups:[],promotions:{status:'unknown',items:[]}};throw Error('unexpected path')};`);
+ const pending=h.run('load(true)');assert.deepEqual(plain(h.run('calls.map(c=>c.path)')),['/refresh']);h.run('finish()');await pending;assert.deepEqual(plain(h.run('calls.map(c=>c.path)')),['/refresh','/intl/accounts','/models/groups']);assert.match(h.run('messages[0][0]'),/凭证已刷新，模型目录未更新/);
+});
+test('known stale prices are labeled snapshot and unknown peers never share an asserted price',()=>{
+ const h=harness();assert.equal(h.run(`modelMultiplierLabel({multiplier_state:'stale',multipliers:[0.12]})`),'0.12×（快照）');assert.equal(h.run(`modelMultiplierLabel({multiplier_state:'unknown',multipliers:[0.12],unknown_credentials:1})`),'0.12×（快照；部分账号）');
+});
+test('local tick preserves hide controls, drag handles, and expanded activity details',()=>{
+ const h=harness();h.run(catalog);h.run(`renderPromotions({status:'known',items:Array.from({length:7},(_,i)=>({title:'item'+i,status:'active'}))})`);const box=h.element('modelGroupsBox'),handle=box.querySelector('.drag-handle'),toggle=box.querySelector('[data-model-toggle]');h.element('promoMore').open=true;handle.focus();h.run('minuteTick()');assert.equal(box.querySelector('.drag-handle'),handle);assert.equal(box.querySelector('[data-model-toggle]'),toggle);assert.equal(h.document.activeElement,handle);assert.equal(h.element('promoMore').open,true);
+});
+
+test('partial auxiliary model failure never claims full refresh success even with updated snapshot',()=>{
+ const h=harness();h.run(`authRefreshToast({model_refresh:{updated:true,status:'partial',error:'aux catalog failed'}},true)`);assert.match(h.run('messages[0][0]'),/凭证已刷新，模型目录部分更新/);assert.equal(h.run('messages[0][1]'),'warn');assert.match(h.run('messages[0][2]'),/aux catalog failed/);
+});
+test('failed credential refresh never reads or refreshes model catalog',async()=>{
+ const h=harness();h.run(`lastAccounts=[{auth_index:'one'}];var calls=[];api=async path=>{calls.push(path);return {error:'token rejected'}};`);await h.run(`accountAction('token-refresh','one',null)`);assert.deepEqual(plain(h.run('calls')),['/accounts/refresh']);assert.match(h.run('messages[0][0]'),/账号操作失败/);
+});
+test('activity source snapshot timestamps are distinct from cache response time',()=>{
+ const h=harness();h.run(`renderPromotions({status:'known',server_time:'2026-10-23T10:00:00Z',items:[{status:'unknown',multiplier:0.12,fetched_at:'2026-10-22T12:00:00Z'}]})`);assert.match(h.element('promoMeta').textContent,/快照时间 2026-10-22 12:00:00 UTC/);assert.match(h.element('promoMeta').textContent,/读取时间 2026-10-23 10:00:00 UTC/);assert.match(h.element('promoList').textContent,/0.12×（快照）/);assert.match(h.element('promoList').querySelector('.promo-price').getAttribute('title'),/2026-10-22/);
+});
+test('auth catalog readback supersedes older cache load without resetting exclusion controls',async()=>{
+ const h=harness();h.run(catalog);h.run(`var pending=[];api=()=>new Promise(resolve=>pending.push(resolve));hostAPI=async()=>({'oauth-excluded-models':{}});`);const old=h.run('modelCtlLoad()'),fresh=h.run('syncModelsAfterAuth()');h.run(`pending[1]({groups:[{realm:'cn',models:[{id:'new'}]}],promotions:{status:'known',items:[]}})`);await fresh;h.run(`pending[0]({groups:[{realm:'cn',models:[{id:'old'}]}]})`);await old;assert.equal(h.run('catalogRows()[0].id'),'new');assert.equal(h.run('modelStateValid'),true);assert.equal(h.run('promotionsData.status'),'known');
+});
+test('superseded auth read failure cannot stale a newer successful catalog',async()=>{
+ const h=harness();h.run(catalog);h.run(`var pending=[];api=()=>new Promise((resolve,reject)=>pending.push({resolve,reject}));`);const old=h.run('syncModelsAfterAuth()'),fresh=h.run('syncModelsAfterAuth()');h.run(`pending[1].resolve({groups:[{realm:'cn',models:[{id:'new',multiplier:0.12,multiplier_state:'known'}]}]})`);await fresh;h.run(`pending[0].reject(Error('old failure'))`);await old;assert.equal(h.run('catalogRows()[0].id'),'new');assert.equal(h.run('modelGroupsData.groups[0].models[0].multiplier_state'),'known');
+});
+
+test('batch credential failure cannot become full success from another accounts model refresh',()=>{
+ const h=harness();h.run(`authRefreshToast({results:[{error:'token failed'},{model_refresh:{updated:true,status:'updated'}}]},true)`);assert.match(h.run('messages[0][0]'),/账号刷新部分失败/);assert.equal(h.run('messages[0][1]'),'warn');
 });

@@ -13,7 +13,7 @@ import (
 )
 
 // Observation validity, not a billing guarantee. No refresh changes scheduling.
-const modelFactsMaxAge = 90 * time.Minute
+const modelFactsMaxAge = 24 * time.Hour
 
 func modelSnapshotStale(fetched string, now time.Time) bool {
 	t, err := time.Parse(time.RFC3339, fetched)
@@ -247,9 +247,13 @@ func enrichModelGroup(g *modelGroup, entries []*variantCatalogEntry, now time.Ti
 			if !ok {
 				f = upstream.ModelFacts{ThinkingState: "unknown", MetadataState: "unknown", Promotions: []upstream.ModelPromotion{}}
 			}
-			// Unknown thinking metadata is not an implicit "high" or default.
+			// Only the serving lane's explicit options/default are authoritative.
 			f.Thinking = nil
 			f.ThinkingState = "unknown"
+			if d := primaryThinkingDefault(f, upstream.FunctionFor(g.Realm)); d != "" {
+				f.Thinking = d
+				f.ThinkingState = "known"
+			}
 			af := accountModelFacts{ModelFacts: f, AccountScope: fmt.Sprintf("%s-account-%d", g.Realm, ei+1), FetchedAt: e.snapshot.FetchedAt, Stale: modelSnapshotStale(e.snapshot.FetchedAt, now)}
 			af.RateStale = af.Stale || modelRateBoundaryPassed(f, e.snapshot.FetchedAt, now)
 			for _, p := range f.Promotions {
@@ -290,6 +294,7 @@ func enrichModelGroup(g *modelGroup, entries []*variantCatalogEntry, now time.Ti
 		} else if row.Context != nil {
 			row.ContextState = "known"
 		}
+		aggregateThinkingDefault(row)
 		sort.Float64s(row.Multipliers)
 		switch {
 		case len(row.Multipliers) > 1:
@@ -349,4 +354,43 @@ func reloadCatalogSnapshot(e *variantCatalogEntry) {
 			e.snapshot = c
 		}
 	}
+}
+
+func primaryThinkingDefault(f upstream.ModelFacts, function string) string {
+	for _, c := range f.CapabilityCatalog {
+		if c.SourceFunction != function || c.ThinkingDefault == "" {
+			continue
+		}
+		for _, option := range c.ThinkingOptions {
+			if option == c.ThinkingDefault {
+				return option
+			}
+		}
+	}
+	return ""
+}
+func aggregateThinkingDefault(row *modelGroupEntry) {
+	row.Thinking = nil
+	row.ThinkingState = "unknown"
+	if row.UnknownCredentials > 0 || len(row.Facts) != row.Credentials || row.Credentials == 0 {
+		return
+	}
+	current := ""
+	for _, f := range row.Facts {
+		if f.Stale {
+			row.ThinkingState = "stale"
+			return
+		}
+		d, ok := f.Thinking.(string)
+		if !ok || d == "" || f.ThinkingState != "known" {
+			return
+		}
+		if current != "" && current != d {
+			row.ThinkingState = "different"
+			return
+		}
+		current = d
+	}
+	row.Thinking = current
+	row.ThinkingState = "known"
 }

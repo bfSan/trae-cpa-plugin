@@ -112,7 +112,9 @@ func TestFetchModelsSendsVariantFunction(t *testing.T) {
 	var gotBody string
 	c := testClient(func(r *http.Request) (*http.Response, error) {
 		b, _ := io.ReadAll(r.Body)
-		gotBody = string(b)
+		if strings.Contains(string(b), `"function":"solo_work_lite"`) {
+			gotBody = string(b)
+		}
 		return jsonResp(200, `{"config_info_list":[{"config_name":"m","display_config":{"display_name":"M"}}]}`), nil
 	})
 	for variant, wantFn := range map[string]string{

@@ -147,28 +147,38 @@ func refreshAuthRequest(request []byte) ([]byte, error) {
 	if strings.TrimSpace(index) == "" {
 		return nil, fmt.Errorf("auth refresh requires durable host identity")
 	}
-	unlock := accountOperationLock(index)
-	defer unlock()
-	s, err := freshAuthSnapshot(index)
+	// Persist token rotation exactly once, and release its lock before catalog IO.
+	current, err := func() (*authSnapshot, error) {
+		unlock := accountOperationLock(index)
+		defer unlock()
+		s, err := freshAuthSnapshot(index)
+		if err != nil {
+			return nil, err
+		}
+		if s.File.Disabled {
+			return nil, fmt.Errorf("account is manually disabled")
+		}
+		if _, err = refreshSnapshot(s, defaultRefreshSkew); err != nil {
+			return nil, err
+		}
+		return freshAuthSnapshot(index)
+	}()
 	if err != nil {
 		return nil, err
 	}
-	if s.File.Disabled {
-		return nil, fmt.Errorf("account is manually disabled")
+	result := refreshAccountModels(index, true)
+	// A failed model query must not retract already-saved credentials. Re-read
+	// merges concurrent metadata while keeping the last saved token as fallback.
+	if latest, readErr := freshAuthSnapshot(index); readErr == nil {
+		current = latest
 	}
-	// Save to the host immediately: rotating refresh tokens cannot wait for a
-	// later executor. Return the fresh merged document for the host RPC contract.
-	if s.Auth.Variant == variantIntl {
-		_, _, err = refreshIntlSnapshot(s, defaultRefreshSkew)
-	} else {
-		_, err = refreshSnapshot(s, defaultRefreshSkew)
+	response := struct {
+		pluginapi.AuthRefreshResponse
+		ModelRefresh      modelRefreshResult `json:"model_refresh"`
+		ModelRefreshError string             `json:"model_refresh_error,omitempty"`
+	}{
+		AuthRefreshResponse: pluginapi.AuthRefreshResponse{Auth: pluginapi.AuthData{Provider: providerName, FileName: current.File.Name, Label: current.File.Label, StorageJSON: current.Raw}, NextRefreshAfter: time.Now().Add(12 * time.Hour).UTC()},
+		ModelRefresh:        result, ModelRefreshError: result.Error,
 	}
-	if err != nil {
-		return nil, err
-	}
-	current, err := freshAuthSnapshot(index)
-	if err != nil {
-		return nil, err
-	}
-	return okEnvelope(pluginapi.AuthRefreshResponse{Auth: pluginapi.AuthData{Provider: providerName, FileName: current.File.Name, Label: current.File.Label, StorageJSON: current.Raw}, NextRefreshAfter: time.Now().Add(12 * time.Hour).UTC()})
+	return okEnvelope(response)
 }

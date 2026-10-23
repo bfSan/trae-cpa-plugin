@@ -66,7 +66,7 @@ func TestModelGroupsUnionRetainsAccountDifferences(t *testing.T) {
 }
 
 func TestModelGroupsRefreshQueriesEveryCredential(t *testing.T) {
-	restore := stubPersistSeams(t, map[string][]byte{})
+	restore := stubPersistSeams(t, map[string][]byte{"one": persistTestStorage("one", "cn", ""), "two": persistTestStorage("two", "cn", "")})
 	defer restore()
 	calls := map[string]bool{}
 	restoreFetch := stubCNDiscovery(t, func(a *auth.Auth) ([]upstream.ModelInfo, error) {
@@ -74,7 +74,7 @@ func TestModelGroupsRefreshQueriesEveryCredential(t *testing.T) {
 		return []upstream.ModelInfo{{ID: a.AccessToken}}, nil
 	})
 	defer restoreFetch()
-	g := buildModelGroup("cn", []*variantCatalogEntry{{name: "one", variant: "cn", hasToken: true, storage: persistTestStorage("one", "cn", "")}, {name: "two", variant: "cn", hasToken: true, storage: persistTestStorage("two", "cn", "")}}, true)
+	g := buildModelGroup("cn", []*variantCatalogEntry{{index: "one", name: "one", variant: "cn", hasToken: true, storage: persistTestStorage("one", "cn", "")}, {index: "two", name: "two", variant: "cn", hasToken: true, storage: persistTestStorage("two", "cn", "")}}, true)
 	if len(calls) != 2 || g.Count != 2 {
 		t.Fatalf("refresh only representative: calls=%v group=%+v", calls, g)
 	}

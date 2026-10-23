@@ -91,7 +91,7 @@ func TestAccountFactsDifferencesUnknownAndStale(t *testing.T) {
 		t.Fatal("unknown peer treated as equal")
 	}
 	b.snapshot.Facts = a.snapshot.Facts
-	b.snapshot.FetchedAt = now.Add(-2 * time.Hour).Format(time.RFC3339)
+	b.snapshot.FetchedAt = now.Add(-modelFactsMaxAge - time.Hour).Format(time.RFC3339)
 	g = buildModelGroup("cn", []*variantCatalogEntry{a, b}, false)
 	if g.Models[0].Multiplier != nil || g.Models[0].MultiplierState != "stale" {
 		t.Fatal("stale rate projected as current")
@@ -127,7 +127,7 @@ func TestPersistFactsChangesAndWatcherConvergence(t *testing.T) {
 		t.Fatal("unrelated doc field lost")
 	}
 	// Re-observation renews only after expiry, not at each watcher callback.
-	cache.FetchedAt = time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	cache.FetchedAt = time.Now().Add(-modelFactsMaxAge - time.Hour).UTC().Format(time.RFC3339)
 	files["self"], _ = mergeModelCacheIntoDoc(files["self"], cache)
 	persistModelSnapshotWithFacts(storage, "cn", models, dynamic)
 	if modelSnapshotStale(readModelCacheDoc(files["self"]).FetchedAt, time.Now()) {

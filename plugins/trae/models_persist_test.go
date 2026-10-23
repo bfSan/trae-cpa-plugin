@@ -301,7 +301,7 @@ func TestModelGroupsRefresh(t *testing.T) {
 		t.Fatalf("status = %d", status)
 	}
 	cnGroup := groupsByVariant(t, payload)["cn"]
-	if cnGroup.Source != "queried" || cnGroup.Count != 2 || cnGroup.Models[0].ID != "m-fresh-1" {
+	if cnGroup.Source != "refreshed" || cnGroup.Count != 2 || cnGroup.Models[0].ID != "m-fresh-1" {
 		t.Fatalf("refresh group = source %q count %d — fresh discovery should win", cnGroup.Source, cnGroup.Count)
 	}
 

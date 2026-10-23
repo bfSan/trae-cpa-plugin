@@ -1,0 +1,82 @@
+[
+  {
+    "step": 1,
+    "started_at": "2026-10-23T08:57:56Z",
+    "completed_at": "2026-10-23T08:57:59Z",
+    "endpoint": "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+    "model": "deepseek-v4.1-flash",
+    "function": "solo_work_lite",
+    "strategy_override": false,
+    "context_window_override": false,
+    "max_tokens": 256,
+    "usage": {
+      "completion_tokens": 111,
+      "prompt_tokens": 3406,
+      "reasoning_tokens": 77,
+      "total_tokens": 3517
+    },
+    "all_markers_matched": true,
+    "finish_reason": "stop",
+    "elapsed_ms": 2484
+  },
+  {
+    "step": 2,
+    "started_at": "2026-10-23T08:59:55Z",
+    "completed_at": "2026-10-23T09:00:20Z",
+    "endpoint": "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+    "model": "deepseek-v4.1-flash",
+    "function": "solo_work_lite",
+    "strategy_override": false,
+    "context_window_override": false,
+    "max_tokens": 256,
+    "usage": {
+      "completion_tokens": 121,
+      "prompt_tokens": 240246,
+      "reasoning_tokens": 97,
+      "total_tokens": 240367
+    },
+    "all_markers_matched": true,
+    "finish_reason": "stop",
+    "elapsed_ms": 24958
+  },
+  {
+    "step": 3,
+    "started_at": "2026-10-23T09:01:15Z",
+    "completed_at": "2026-10-23T09:03:13Z",
+    "endpoint": "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+    "model": "deepseek-v4.1-flash",
+    "function": "solo_work_lite",
+    "strategy_override": false,
+    "context_window_override": false,
+    "max_tokens": 256,
+    "usage": {
+      "completion_tokens": 118,
+      "prompt_tokens": 901421,
+      "reasoning_tokens": 85,
+      "total_tokens": 901539
+    },
+    "all_markers_matched": true,
+    "finish_reason": "stop",
+    "elapsed_ms": 117554
+  },
+  {
+    "step": 4,
+    "started_at": "2026-10-23T09:12:41Z",
+    "completed_at": "2026-10-23T09:14:58Z",
+    "endpoint": "https://trae-api-cn.mchost.guru/api/agent/v3/llm_utils_chat",
+    "model": "deepseek-v4.1-flash",
+    "function": "solo_work_lite",
+    "strategy_override": false,
+    "context_window_override": false,
+    "max_tokens": 256,
+    "usage": {
+      "completion_tokens": 128,
+      "prompt_tokens": 990767,
+      "reasoning_tokens": 93,
+      "total_tokens": 990895
+    },
+    "all_markers_matched": true,
+    "finish_reason": "stop",
+    "elapsed_ms": 137107
+  }
+]

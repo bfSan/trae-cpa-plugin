@@ -131,7 +131,7 @@ const (
 // version is injected at build time via -ldflags "-X main.version=...".
 // Keep the default in sync with the release tag: the shipped build.sh does
 // NOT inject it (only "-s -w"), so the plugin reports this literal value.
-var version = "0.13.1"
+var version = "0.13.2"
 
 var (
 	hostAPI *C.cliproxy_host_api
@@ -537,6 +537,7 @@ func handleModelForAuth(request []byte) ([]byte, error) {
 	// NOT nested under "auth" (v0.12.0-0.12.1 parsed the wrong shape, so every
 	// account silently fell back to the same static list; fixed in v0.12.2).
 	var req struct {
+		AuthID       string                      `json:"AuthID"`
 		StorageJSON  []byte                      `json:"StorageJSON"`
 		AuthProvider string                      `json:"AuthProvider"`
 		Metadata     map[string]any              `json:"Metadata"`
@@ -565,7 +566,7 @@ func handleModelForAuth(request []byte) ([]byte, error) {
 	}
 	return okEnvelope(pluginapi.ModelResponse{
 		Provider: providerName,
-		Models:   filterExcludedModels(modelsForVariant(a, req.StorageJSON), req.Host, subKey),
+		Models:   filterExcludedModels(accountModelsForStorage(a, req.StorageJSON, false, req.AuthID), req.Host, subKey),
 	})
 }
 
@@ -586,49 +587,8 @@ var fetchModelsFn = func(a *auth.Auth) ([]upstream.ModelInfo, error) {
 // v0.12.63: storageJSON rides along so the snapshot lifecycle (persist on
 // success, serve last-known-good on failure) can locate the credential's
 // file. modelsForVariant returns the PRE-exclusion advertised catalog.
-func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
-	suffix := ""
-	if a.Variant == variantSolo {
-		suffix = modelSuffixSolo
-	}
-	dynamic, err := fetchModelsFn(a)
-	if err != nil {
-		log.Printf("model.for_auth %s (%s): %v — own persisted snapshot / empty catalog", a.UID, a.Variant, err)
-		if snap, ok := persistedSnapshotForStorage(storageJSON, a.Variant); ok {
-			return applyModelOrder(snap)
-		}
-		return []pluginapi.ModelInfo{}
-	}
-	out := make([]pluginapi.ModelInfo, 0, len(dynamic))
-	seen := make(map[string]bool, len(dynamic))
-	for _, m := range dynamic {
-		if m.ID == "" || seen[m.ID] {
-			continue
-		}
-		// "auto"/"work" are Intl-exclusive virtual names — never expose
-		// them on CN/SOLO accounts even if the catalog lists them.
-		if m.ID == "auto" || m.ID == "work" {
-			continue
-		}
-		seen[m.ID] = true
-		out = append(out, pluginapi.ModelInfo{
-			ID:                  m.ID + suffix,
-			Name:                m.Name,
-			ContextLength:       m.ContextWindow,
-			MaxCompletionTokens: m.MaxTokens,
-		})
-	}
-	if len(out) == 0 {
-		if snap, ok := persistedSnapshotForStorage(storageJSON, a.Variant); ok {
-			return applyModelOrder(snap)
-		}
-		return []pluginapi.ModelInfo{}
-	}
-	// v0.12.63: stamp the last-known-good catalog into the credential file
-	// (advertised ids, post-suffix, pre exclusion — exclusion re-applies on
-	// every serve branch). Change-guarded inside; best-effort.
-	persistModelSnapshotWithFacts(storageJSON, a.Variant, out, dynamic)
-	return applyModelOrder(out)
+func modelsForVariant(a *auth.Auth, storageJSON []byte, force ...bool) []pluginapi.ModelInfo {
+	return accountModelsForStorage(a, storageJSON, len(force) > 0 && force[0])
 }
 
 // handleUsageTrae is the UsagePlugin entry point (v0.12.64): the host calls

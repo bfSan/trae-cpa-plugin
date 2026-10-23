@@ -252,57 +252,15 @@ func intlhandleModelForAuth(request []byte) ([]byte, error) {
 	return okEnvelope(pluginapi.ModelResponse{Provider: intlproviderName, Models: out})
 }
 
-// intlmodelCatalogForAuth resolves the PRE-exclusion advertised Intl catalog
-// for one credential (v0.12.63): refresh-before-discovery (v0.12.53) → live
-// fetch → persisted snapshot → static. On success the catalog (post-suffix,
-// including the auto/work virtuals) is stamped into the credential file so
-// the panel picker and restart-outage recovery serve real data. Exposed for
-// the picker's ?refresh=1 path, which drives the exact same chain.
+// intlmodelCatalogForAuth uses the account-scoped daily catalog without rotating
+// tokens. Only explicit credential refresh and existing executor paths rotate.
 func intlmodelCatalogForAuth(storageJSON []byte, authID string, a *upstream.Auth) []pluginapi.ModelInfo {
-	// Maintenance refreshes under the shared fresh physical-document boundary,
-	// releasing its lock before model discovery and snapshot persistence.
-	refreshed, refreshErr := refreshIntlExecutorAuth(pluginapi.ExecutorRequest{AuthID: authID, StorageJSON: storageJSON}, a)
-	if refreshErr != nil {
-		if snap, ok := persistedSnapshotForStorage(storageJSON, variantIntl); ok {
-			return applyModelOrder(snap)
-		}
-		return []pluginapi.ModelInfo{}
-	}
-	a = refreshed
-	storageJSON = modelStorageWithAccessToken(storageJSON, a.AccessToken)
-	dynamic, err := intlupstreamClient.FetchModels(a)
+	ca, err := parseStoredAuth(storageJSON)
 	if err != nil {
-		log.Printf("model.for_auth %s: %v — own persisted snapshot / empty catalog", a.UID, err)
-		if snap, ok := persistedSnapshotForStorage(storageJSON, variantIntl); ok {
-			return applyModelOrder(snap)
-		}
 		return []pluginapi.ModelInfo{}
 	}
-	// Namespace every dynamic ID with -intl (v0.12.2) and skip auto/work so
-	// the virtual models below are not duplicated.
-	out := make([]pluginapi.ModelInfo, 0, len(dynamic)+2)
-	seen := map[string]bool{"auto": true, "work": true}
-	for _, id := range dynamic {
-		if id == "" || id == "auto" || id == "work" {
-			continue
-		}
-		nid := id + "-intl"
-		if seen[nid] {
-			continue
-		}
-		seen[nid] = true
-		out = append(out, pluginapi.ModelInfo{ID: nid, Name: nid, OwnedBy: intlproviderName})
-	}
-	// Always include "auto" and "work" as virtual models.
-	out = append(out,
-		pluginapi.ModelInfo{ID: "auto", Name: "auto (server pick)"},
-		pluginapi.ModelInfo{ID: "work", Name: "work (fast mode)"},
-	)
-	// v0.12.63: stamp the last-known-good catalog into the credential file
-	// (advertised ids, pre exclusion — exclusion re-applies on every serve
-	// branch). Change-guarded inside; best-effort.
-	persistModelSnapshot(storageJSON, variantIntl, out)
-	return applyModelOrder(out)
+	ca.Variant = variantIntl
+	return accountModelsForStorage(ca, storageJSON, false, authID)
 }
 
 func intlstaticModels() []pluginapi.ModelInfo {

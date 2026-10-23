@@ -82,3 +82,12 @@ Activity windows use explicit named time zones, ISO weekdays and overnight start
 Account credit progress uses the same eligible credit packages and rounding basis as the reported balance. It excludes check-in rewards. The used portion is the consumed part of the current finite pool, not an all-time spend counter; unknown/unlimited totals do not get a fabricated percentage.
 
 The official Max-context capability is real, but it must not be conflated with the current `solo_work_lite` request lane. See [the protocol investigation](trae-max-context.md). This release does not silently advertise/enable 1M on the existing CN executor.
+
+
+## 0.13.2 daily refresh and readonly capability policy
+
+This supersedes the 0.13.1 15-minute visible-page polling policy above. Discovery is server-owned and per credential, once per 24 hours, with explicit credential/host-auth refresh and manual directory refresh as additional triggers. The page does not issue automatic upstream refreshes on startup, visibility, timer or campaign transitions. It only updates local snapshot presentation.
+
+Model snapshots use schema version 2. A persisted attempt checkpoint prevents repeated discovery after failure/restart. Disabled/deleted credentials are skipped. Network IO occurs outside account locks; commit rechecks token, refresh token, realm, identity and manual disable. Synchronous host-save watchers read visible or last-good data without waiting on the same flight, avoiding recursive save deadlocks. A superseded flight can restart at most once.
+
+Authenticated read-only `solo_agent` metadata supplements the existing worklite catalog by exact model ID and credential only. It does not supply model authorization or change the chat function. A separate credential-bound input-test receipt can enable the matching declared context; evidence is not shared across accounts or realms. See [catalog policy](model-catalog-refresh.md). No SQLite dependency or fake context-selection control is added.
