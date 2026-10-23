@@ -58,3 +58,19 @@ func TestCreditsPoolUsageFilters(t *testing.T) {
 		t.Fatalf("cancelled pack should be filtered: %+v", g)
 	}
 }
+
+func TestCreditsPoolBreakdownUsesSameRoundedPackageBasis(t *testing.T) {
+	packs := []EntitlementPack{poolPack(PackQuota{CreditsLimit: i64p(200)}, PackUsage{CreditsAmount: f64p(49.4)}), poolPack(PackQuota{CreditsLimit: i64p(100)}, PackUsage{CreditsAmount: f64p(20)})}
+	got := CreditsPoolUsage(packs, true)
+	if !got.BreakdownKnown || got.Total != 300 || got.Remain != 231 || got.Used != 69 || got.Total != got.Remain+got.Used || got.PackCount != 2 {
+		t.Fatalf("bad measured breakdown: %+v", got)
+	}
+	unknown := CreditsPoolUsage([]EntitlementPack{poolPack(PackQuota{}, PackUsage{})}, true)
+	if unknown.BreakdownKnown {
+		t.Fatal("missing limits invented breakdown")
+	}
+	unlimited := CreditsPoolUsage([]EntitlementPack{poolPack(PackQuota{CreditsLimit: i64p(-1)}, PackUsage{})}, true)
+	if unlimited.BreakdownKnown {
+		t.Fatal("unlimited total cannot be percent denominator")
+	}
+}

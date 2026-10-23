@@ -1,0 +1,27 @@
+[
+  {
+    "fetched_at": "2026-10-23T00:55:54Z",
+    "function": "solo_work_lite",
+    "config_name": "deepseek-v4.1-flash",
+    "context_window_tokens": {
+      "dev": 200000
+    },
+    "display_config": {
+      "max_mode": false,
+      "display_name": "DeepSeek-V4.1-Flash"
+    }
+  },
+  {
+    "fetched_at": "2026-10-23T01:21:25Z",
+    "function": "solo_agent",
+    "config_name": "deepseek-v4.1-flash",
+    "context_window_tokens": {
+      "dev": 200000,
+      "max": 1000000
+    },
+    "display_config": {
+      "max_mode": true,
+      "display_name": "DeepSeek-V4.1-Flash"
+    }
+  }
+]

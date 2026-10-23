@@ -281,6 +281,9 @@ type traeCredits struct {
 	CreditsPoolRemain    *int64 `json:"credits_pool_remain,omitempty"`
 	CreditsPoolKnown     bool   `json:"credits_pool_known,omitempty"`
 	CreditsPoolUnlimited bool   `json:"credits_pool_unlimited,omitempty"`
+	CreditsPoolTotal     *int64 `json:"credits_pool_total,omitempty"`
+	CreditsPoolUsed      *int64 `json:"credits_pool_used,omitempty"`
+	CreditsPoolPackCount int    `json:"credits_pool_pack_count,omitempty"`
 }
 
 type traeCheckin struct {
@@ -541,6 +544,11 @@ func creditsFromCache(e *accountCacheEntry) *traeCredits {
 			c.CreditsPoolRemain = &pr
 			c.CreditsPoolKnown = true
 			c.CreditsPoolUnlimited = e.usage.CreditsPool.Unlimited
+			if e.usage.CreditsPool.BreakdownKnown && !e.usage.CreditsPool.Unlimited {
+				total, used := e.usage.CreditsPool.Total, e.usage.CreditsPool.Used
+				c.CreditsPoolTotal, c.CreditsPoolUsed = &total, &used
+				c.CreditsPoolPackCount = e.usage.CreditsPool.PackCount
+			}
 		}
 		return c
 	}
@@ -856,6 +864,11 @@ func finalizeAccountCredits(f pluginapi.HostAuthFileEntry, sa *storedAuth, entry
 	if sum.CreditsPool.Known {
 		entry["credits_pool_remain"] = sum.CreditsPool.Remain
 		entry["credits_pool_unlimited"] = sum.CreditsPool.Unlimited
+		if sum.CreditsPool.BreakdownKnown && !sum.CreditsPool.Unlimited {
+			entry["credits_pool_total"] = sum.CreditsPool.Total
+			entry["credits_pool_used"] = sum.CreditsPool.Used
+			entry["credits_pool_pack_count"] = sum.CreditsPool.PackCount
+		}
 	}
 	if sum.UsageModel == "basic" {
 		entry["used"] = sum.Used

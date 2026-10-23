@@ -106,7 +106,8 @@ func buildMaintenanceStatus() map[string]any {
 		row["observations"] = facts
 		rows = append(rows, row)
 	}
-	return map[string]any{"provider": providerName, "accounts": rows, "server_time": time.Now().Format(time.RFC3339)}
+	auto, keepalive := maintenanceEnabled()
+	return map[string]any{"provider": providerName, "accounts": rows, "server_time": time.Now().Format(time.RFC3339), "checkin_auto": auto, "token_keepalive": keepalive}
 }
 func releaseAccountObservation(req pluginapi.ManagementRequest) map[string]any {
 	var body struct {

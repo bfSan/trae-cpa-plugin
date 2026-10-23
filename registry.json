@@ -7,13 +7,24 @@
       "name": "Trae",
       "description": "Trae CN / SOLO CN / Intl provider for CPA. Protocol, credentials, confirmed check-in and account facts only; staged/CPA owns account pools and routing.",
       "author": "bfSan",
-      "version": "0.13.0",
-      "changelog": "Standalone Trae fork; remove routing policy pool, unify panel, safe credential maintenance, confirmed check-in, staged login recovery and HTTP routing.",
+      "version": "0.13.1",
+      "changelog": "WorkBuddy-aligned permanent dashboard; factual model pricing/promotions with time-window states, account usage progress, safe automatic model controls, and documented Max-context protocol investigation.",
       "repository": "https://github.com/bfSan/trae-cpa-plugin",
       "homepage": "https://github.com/bfSan/trae-cpa-plugin",
       "license": "MIT",
-      "platforms": ["linux-amd64", "linux-arm64", "darwin-amd64", "darwin-arm64", "windows-amd64"],
-      "tags": ["Provider", "OAuth", "Trae", "CheckIn"]
+      "platforms": [
+        "linux-amd64",
+        "linux-arm64",
+        "darwin-amd64",
+        "darwin-arm64",
+        "windows-amd64"
+      ],
+      "tags": [
+        "Provider",
+        "OAuth",
+        "Trae",
+        "CheckIn"
+      ]
     }
   ]
 }

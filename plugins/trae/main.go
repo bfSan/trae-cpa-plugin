@@ -131,7 +131,7 @@ const (
 // version is injected at build time via -ldflags "-X main.version=...".
 // Keep the default in sync with the release tag: the shipped build.sh does
 // NOT inject it (only "-s -w"), so the plugin reports this literal value.
-var version = "0.13.0"
+var version = "0.13.1"
 
 var (
 	hostAPI *C.cliproxy_host_api
@@ -627,7 +627,7 @@ func modelsForVariant(a *auth.Auth, storageJSON []byte) []pluginapi.ModelInfo {
 	// v0.12.63: stamp the last-known-good catalog into the credential file
 	// (advertised ids, post-suffix, pre exclusion — exclusion re-applies on
 	// every serve branch). Change-guarded inside; best-effort.
-	persistModelSnapshot(storageJSON, a.Variant, out)
+	persistModelSnapshotWithFacts(storageJSON, a.Variant, out, dynamic)
 	return applyModelOrder(out)
 }
 

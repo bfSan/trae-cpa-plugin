@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/upstream"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -45,7 +46,8 @@ type persistedModelCache struct {
 	// FetchedAt is the discovery time (RFC3339 UTC).
 	FetchedAt string `json:"fetched_at"`
 	// Models is the advertised list (post-suffix, pre exclusion).
-	Models []pluginapi.ModelInfo `json:"models"`
+	Models []pluginapi.ModelInfo          `json:"models"`
+	Facts  map[string]upstream.ModelFacts `json:"facts,omitempty"`
 }
 
 // Test seams — the real host RPC bridge is unavailable in unit tests.
@@ -108,6 +110,29 @@ func persistedFetchedAt(c *persistedModelCache) string {
 // fresh snapshot into it. Best-effort: failures are logged, never propagated
 // — a persist miss only means the next restart re-discovers from scratch.
 func persistModelSnapshot(storageJSON []byte, variant string, models []pluginapi.ModelInfo) {
+	persistModelSnapshotFacts(storageJSON, variant, models, nil)
+}
+
+// persistModelSnapshotWithFacts is the sole successful CN/Solo discovery hook.
+func persistModelSnapshotWithFacts(storageJSON []byte, variant string, models []pluginapi.ModelInfo, dynamic []upstream.ModelInfo) {
+	facts := make(map[string]upstream.ModelFacts)
+	allowed := make(map[string]bool)
+	for _, m := range models {
+		allowed[m.ID] = true
+	}
+	for _, m := range dynamic {
+		id := m.ID
+		if variant == variantSolo {
+			id += modelSuffixSolo
+		}
+		if allowed[id] {
+			facts[id] = m.Facts
+		}
+	}
+	persistModelSnapshotFacts(storageJSON, variant, models, facts)
+}
+
+func persistModelSnapshotFacts(storageJSON []byte, variant string, models []pluginapi.ModelInfo, facts map[string]upstream.ModelFacts) {
 	name, _, ok := locateCredentialFile(storageJSON)
 	if !ok {
 		return
@@ -139,10 +164,23 @@ func persistModelSnapshot(storageJSON []byte, variant string, models []pluginapi
 		return
 	}
 	doc := snapshot.Raw
-	if existing := readModelCacheDoc(doc); existing != nil && existing.Realm == variant && samePersistedModels(existing.Models, models) {
-		return
+	now := time.Now().UTC()
+	if existing := readModelCacheDoc(doc); existing != nil && existing.Realm == variant && samePersistedModels(existing.Models, models) && sameModelFacts(existing.Facts, facts) {
+		// Avoid watcher/save loops, but renew aging metadata observations even
+		// when values are unchanged. Old model-only callers keep their guard.
+		if facts == nil {
+			return
+		}
+		observed, parseErr := time.Parse(time.RFC3339, existing.FetchedAt)
+		renew := parseErr != nil || now.Sub(observed) >= modelFactsMaxAge/2
+		for _, f := range facts {
+			renew = renew || modelRateBoundaryPassed(f, existing.FetchedAt, now)
+		}
+		if !renew {
+			return
+		}
 	}
-	merged, err := mergeModelCacheIntoDoc(doc, &persistedModelCache{Realm: variant, FetchedAt: time.Now().UTC().Format(time.RFC3339), Models: models})
+	merged, err := mergeModelCacheIntoDoc(doc, &persistedModelCache{Realm: variant, FetchedAt: now.Format(time.RFC3339), Models: models, Facts: facts})
 	if err != nil {
 		log.Printf("models: snapshot merge failed: %v", err)
 		return

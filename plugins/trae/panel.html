@@ -48,8 +48,8 @@ h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bot
 button{background:var(--acc);color:var(--on-acc);border:0;border-radius:8px;padding:8px 14px;cursor:pointer;font-size:13px}
 button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background:var(--btn-sec-hover)}button:disabled{opacity:.5;cursor:default}
 .toggle{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
-.card,.summary{background:var(--card);border:1px solid var(--border);border-radius:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,320px),1fr));gap:14px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px}
 .card{padding:16px}
 .card h2{font-size:15px;margin:0 0 2px;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
 .uid{color:var(--mut);font-size:11px;font-family:ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:12px}
@@ -59,17 +59,6 @@ button.sec{background:var(--btn-sec);color:var(--fg)}button.sec:hover{background
 .badge.cooling{background:var(--warn-soft);color:var(--warn);border:1px solid var(--warn-border)}
 .badge.disabled{background:var(--mut-soft);color:var(--mut);border:1px solid var(--mut-border)}
 .badge.checked{background:var(--ok-soft);color:var(--ok);border:1px solid var(--ok-border)}
-.summary{padding:16px;margin-bottom:14px}
-.summary-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-.summary-title{font-weight:700;font-size:14px}
-.summary-meta{color:var(--mut);font-size:12px}
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:10px}
-.summary-item{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 12px}
-.summary-item .k{color:var(--mut);font-size:11px;margin-bottom:4px}
-.summary-item .v{font-size:18px;font-weight:700}
-.summary-item .v.ok{color:var(--ok)}
-.summary-item .v.warn{color:var(--warn)}
-.summary-item .v.err{color:var(--err)}
 .row{display:flex;justify-content:space-between;padding:5px 0;border-top:1px dashed var(--border)}
 .row:first-of-type{border-top:0}.k{color:var(--mut)}.v{font-weight:600}
 .v.ok{color:var(--ok)}.v.warn{color:var(--warn)}.v.err{color:var(--err)}
@@ -94,16 +83,22 @@ button.done:disabled{opacity:1}
 @keyframes sp{to{transform:rotate(360deg)}}
 button .spin{border-color:var(--on-acc);border-top-color:transparent}
 .loading{color:var(--mut);text-align:center;padding:40px}
-/* 模型禁用卡片（v0.12.63）：按渠道勾选启用/禁用，写入宿主 oauth-excluded-models 子键 */
-.mg-group{border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-bottom:10px;background:var(--surface)}
-.mg-hd{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
-.mg-meta{color:var(--mut);font-size:11px}
-.mg-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px 12px;margin-top:8px}
-.mg-item{display:flex;gap:6px;align-items:center;font-size:13px;cursor:pointer;min-width:0}
-.mg-item input{accent-color:var(--acc)}
-.mg-item.mg-locked{opacity:.6;cursor:default}
-.model-table{width:100%;border-collapse:collapse;font-size:12px}.model-table th,.model-table td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border);vertical-align:top}.model-table th{white-space:nowrap}.model-table code{overflow-wrap:anywhere}.model-table button{padding:4px 7px}.model-meta{font-size:11px;color:var(--mut);margin-top:5px;line-height:1.7;white-space:nowrap}.drag-handle{background:transparent;color:var(--mut);cursor:grab;font-size:21px;line-height:1;padding:4px 7px}.drag-handle:active{cursor:grabbing}.drag-handle:focus-visible{outline:2px solid var(--acc);outline-offset:2px}.model-selected{font-weight:700;color:var(--acc)}.model-label{font-weight:400;color:var(--fg)}
-.mg-note{color:var(--warn);font-size:12px;margin-top:6px}
+/* Card rows, tier emphasis and activity surfaces follow WorkBuddy's panel. */
+.filter-bar{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+.ftag{background:var(--surface);border:1px solid var(--border);color:var(--mut);border-radius:99px;padding:5px 14px;font-size:12px;cursor:pointer;font-weight:600;white-space:nowrap}
+.ftag.active{background:var(--acc);color:var(--on-acc);border-color:var(--acc)}.ftag .cnt{font-size:10px;opacity:.75;margin-left:4px}
+.filter-chips{display:flex;gap:8px;align-items:center;flex-wrap:wrap}#accountTools .field-input{flex:1 1 180px}#accountCount{white-space:nowrap}.field-input{min-width:0}.local-sort{background:var(--input-bg);border:1px solid var(--border);border-radius:8px;padding:7px;color:var(--fg)}
+.login-help{margin-bottom:16px}.login-help summary{cursor:pointer;color:var(--mut);font-size:12px}.login-help[open] summary{margin-bottom:10px}.login-note{font-size:12px;color:var(--mut);margin:8px 0}
+.model-table-wrap{overflow-x:auto;max-width:100%}.model-table{min-width:1020px}.model-rows{display:flex;flex-direction:column;gap:6px;max-height:560px;overflow:auto;padding-right:2px}
+.model-head,.model-row{display:grid;grid-template-columns:38px minmax(150px,1.2fr) repeat(3,minmax(140px,1fr)) 280px;align-items:center;gap:10px;padding:8px 10px}
+.model-head{color:var(--mut);font-size:12px;font-weight:700;border-bottom:1px solid var(--border)}.model-row{border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+.drag-handle{cursor:grab;touch-action:none;background:var(--btn-sec);color:var(--mut);border:1px solid var(--border);border-radius:99px;padding:3px 9px;font-size:18px}.drag-handle:active{cursor:grabbing}.drag-handle:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+.model-id{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;font-weight:600;overflow-wrap:anywhere}.model-name{font-size:12px;color:var(--mut);overflow-wrap:anywhere}.realm-cell{min-width:0}.realm-facts{display:flex;flex-direction:column;gap:2px;color:var(--mut);font-size:12px;white-space:nowrap}.realm-facts>span{overflow:hidden;text-overflow:ellipsis}.realm-facts>span:first-child{color:var(--fg)}
+.realm-facts span.ctx-default,.realm-facts span.thinking-default{color:var(--acc);font-weight:700}.model-actions{display:flex;gap:6px;justify-content:flex-end;white-space:nowrap}.model-actions>*{white-space:nowrap}.model-actions .ftag{padding:3px 8px;font-size:12px}.model-actions .hidden-model{color:var(--warn);border-color:var(--warn-border)}.mg-meta{color:var(--mut);font-size:11px}.mg-locked{color:var(--mut)}
+.promo-box{padding:12px 16px;margin:16px 0}.promo-hd{display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}.promo-title{font-weight:700;font-size:14px;cursor:pointer;user-select:none}.promo-live{color:var(--ok)}.promo-live.zero{color:var(--mut)}.promo-meta{color:var(--mut);font-size:12px}.promo-list{display:flex;flex-direction:column;gap:5px;margin-top:10px}
+.promo-row{display:grid;grid-template-columns:minmax(84px,auto) minmax(140px,1.3fr) minmax(64px,auto) minmax(60px,auto) minmax(150px,1.2fr);gap:10px;align-items:center;padding:7px 9px;border-radius:8px;background:var(--surface);font-size:12px;border-left:3px solid var(--mut-border)}.promo-row.on{border-left-color:var(--ok);background:var(--ok-soft)}.promo-row.off{opacity:.72}.promo-badge{font-weight:700;color:var(--mut)}.promo-badge.on,.promo-state.on{color:var(--ok)}.promo-model{font-family:ui-monospace,monospace;font-weight:600;overflow-wrap:anywhere}.promo-price{font-weight:700;font-variant-numeric:tabular-nums}.promo-realm,.promo-state{color:var(--mut);font-size:11px}
+.card{min-width:0}#modelCtlCard{margin-top:16px}.model-status{font-size:12px;color:var(--mut);margin:6px 0 10px}.model-status.err{color:var(--err)}
+@media(max-width:640px){.wrap{padding:18px 12px}#accountTools .field-input{flex-basis:100%}.promo-row{grid-template-columns:1fr 1fr}.bar>*{max-width:100%}}
 </style>
 <script>
 /* Early theme sync (before body paint): mirror CPA parent data-theme when
@@ -153,46 +148,38 @@ button .spin{border-color:var(--on-acc);border-top-color:transparent}
 <body>
 <div class="wrap">
   <h1 id="title">Trae 账号面板</h1>
-  <div style="margin:4px 0 12px;font-size:13px;color:var(--mut)">CN / SOLO / Intl 账号统一管理（INTL 徽标）· Intl 额度以实际查询为准，不提供签到</div>
-  <div class="sub">账号状态与额度观察 · 模型目录与显示顺序 · 调度策略由 staged 管理</div>
+  <div class="sub">CN / SOLO / Intl 账号与额度 · Intl 不提供签到</div>
   <div id="authBox" class="card" style="display:none;margin-bottom:16px">
-    <div style="margin-bottom:8px;color:var(--mut)">Trae SOLO CN 插件本身不强制 management key；当 CPA 主面板要求鉴权时，从嵌入环境自动获取。若自动获取失败，可在此手动粘贴 management key（仅存 sessionStorage）。</div>
-    <div style="display:flex;gap:8px">
-      <input id="keyInput" type="password" placeholder="management key（可选）" class="field-input">
-      <button onclick="saveKey()">连接</button>
-    </div>
+    <div class="login-note">连接 CPA 管理接口；密钥仅保留在本次浏览器会话。</div>
+    <div style="display:flex;gap:8px"><input id="keyInput" type="password" placeholder="management key（可选）" class="field-input"><button onclick="saveKey()">连接</button></div>
   </div>
-  <div class="bar">
-    <button id="refreshBtn" onclick="load(true,this)">刷新数据</button>
+  <div class="bar" id="toolbar">
+    <button class="sec" onclick="startPanelLogin('cn',this)">登录 CN</button>
+    <button class="sec" onclick="startPanelLogin('solo',this)">登录 SOLO</button>
+    <button class="sec" onclick="startPanelLogin('intl',this)">登录 Intl</button>
+    <button id="refreshBtn" onclick="load(true,this)">刷新</button>
     <button class="sec" onclick="checkinAll(this)">全部签到</button>
-    <button class="sec" onclick="modelCtlToggle(this)" title="模型目录、顺序和渠道隐藏">模型管理</button>
-    <label class="toggle">账号分区 <select id="accountFilter" onchange="renderAccounts()"><option value="all">全部</option><option value="cn">CN</option><option value="solo">SOLO</option><option value="intl">Intl</option></select></label><span class="toggle" id="svtime"></span>
+    <label class="toggle" id="autoCheckinLabel" title="每日 09:00（服务器本地时间）"><input id="autoCheckin" type="checkbox" disabled onchange="saveAutoCheckin(this)">自动签到 <span id="autoCheckinStatus">读取中</span></label>
+    <span class="toggle" id="svtime"></span>
   </div>
-  <div class="card" style="margin-bottom:16px">
-    <div class="bar"><button class="sec" onclick="startPanelLogin('cn',this)">登录 CN</button><button class="sec" onclick="startPanelLogin('solo',this)">登录 SOLO</button><button class="sec" onclick="startPanelLogin('intl',this)">登录 Intl</button><span id="loginLaunch"></span></div>
-    <div id="loginStatus" style="margin-bottom:6px;padding:6px 8px;border:1px solid rgba(128,128,128,.35);border-radius:6px;color:var(--mut);font-size:12px;line-height:1.5;word-break:break-all;max-height:9em;overflow-y:auto">登录状态：加载中…</div>
-    <div style="margin-bottom:6px;color:var(--mut)">远程登录兜底：授权完成后浏览器若停在「无法连接 127.0.0.1:&lt;端口&gt;」页面，复制地址栏完整链接粘贴到此处提交，即可完成登录（无需改写前缀）。注意：必须粘贴<b>本次登录</b>生成的链接，登录开始超过 15 分钟或服务重启过则请重新点「登录」后再复制新链接。</div>
-    <div style="display:flex;gap:8px">
-      <input id="cbPaste" type="text" placeholder="http://127.0.0.1:&lt;port&gt;/authorize?isRedirect=true&authCodeInfo=…" class="field-input" style="flex:1">
-      <button onclick="submitCallbackURL(this)">完成登录</button>
-    </div>
-  </div>
-  <div class="summary card" id="summaryBox" style="display:none"></div>
-  <div class="card" id="modelCtlCard" style="display:none;margin:0 0 14px">
-    <h2>模型目录
-      <span style="display:flex;gap:6px">
-        <button class="sec" onclick="modelGroupsRefresh(this)" title="逐凭证查询，失败保留各自已验证目录；目录汇总不代表账号授权">刷新目录</button>
-        <button class="sec" onclick="modelCtlToggle(this)">收起</button>
-      </span>
-    </h2>
-    <div class="sub" style="margin:6px 0 10px">跨账号候选目录，不代表每个账号均有权限。勾选表示该渠道不隐藏；未勾选通过宿主 oauth-excluded-models 保存，保留渠道后缀与全局锁。上下文为上游报告的只读值，不提供未经证实的切换。倍率与 thinking 未上报时不推断。</div>
-    <div id="modelGroupsBox"><div class="loading">加载中…</div></div>
-    <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button onclick="modelGroupsSave(this)">保存隐藏设置</button> <button class="sec" onclick="modelOrderSave(this)">保存排序</button>
-      <span class="toggle">改动写入 config.yaml 的 oauth-excluded-models.trae-&lt;渠道&gt;，宿主热加载后数秒内生效</span>
-    </div>
-  </div>
+  <details class="login-help" id="loginHelp">
+    <summary>登录状态 / 回调恢复</summary>
+    <div id="loginLaunch"></div><div id="loginStatus" class="login-note">登录状态：加载中…</div>
+    <div class="login-note">授权后若无法连接本机回调地址，粘贴本次完整链接继续。服务重启后仍可恢复有效登录；仅过期或明确失效时重新发起。</div>
+    <div style="display:flex;gap:8px"><input id="cbPaste" type="text" placeholder="http://127.0.0.1:&lt;port&gt;/authorize?isRedirect=true&amp;authCodeInfo=…" class="field-input"><button onclick="submitCallbackURL(this)">完成登录</button></div>
+  </details>
+  <div class="filter-bar" id="accountTools"><div id="accountFilters" class="filter-chips" aria-label="账号分区"></div><input id="accountSearch" class="field-input" type="search" placeholder="搜索昵称 / 标签 / 文件 / UID" aria-label="搜索账号" oninput="renderAccounts()"><select id="accountSort" class="local-sort" aria-label="本地显示排序" onchange="renderAccounts()"><option value="original">原始顺序</option><option value="name">名称排序（仅显示）</option></select><span class="toggle" id="accountCount"></span></div>
   <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+  <details class="card promo-box" id="promoBox" open>
+    <summary class="promo-title">上游活动 <span class="promo-live zero" id="promoCount">待核实</span></summary>
+    <div class="promo-meta" id="promoMeta">活动信息未上报</div>
+    <div class="promo-list" id="promoList"></div>
+  </details>
+  <div class="card" id="modelCtlCard">
+    <h2>模型列表 <button id="modelRefreshBtn" class="sec" onclick="modelGroupsRefresh(this)">刷新目录</button></h2>
+    <div id="modelStatus" class="model-status" aria-live="polite">加载中…</div>
+    <div id="modelGroupsBox"><div class="loading">加载中…</div></div>
+  </div>
 </div>
 <div class="toasts" id="toasts"></div>
 <script>
@@ -210,7 +197,7 @@ const API = "/v0/management/plugins/" + providerName;
 document.getElementById("title").textContent =
   providerName==="trae-solo-cn" ? "Trae SOLO CN 账号面板" :
   providerName==="trae-cn"      ? "Trae CN 账号面板"     :
-  (providerName + " 账号面板");
+  "Trae 账号面板";
 
 /* ---------- management key acquisition (3 fallbacks, zero config) ----------
    1) CPA main panel localStorage "cli-proxy-auth" (XOR+base64, same-origin
@@ -294,19 +281,21 @@ function escAttr(s){return esc(s)}
 
 function progressHTML(cr,acct){
   if(!cr)return `<div class="pb"><div class="pb-label"><span>额度</span><span>${acct&&acct.disabled?'未查询（账号已禁用）':'未查询'}</span></div></div>`;
-  const when=cr.fetched_at?` · 快照 ${esc(cr.fetched_at)}`:'';
-  const plan=cr.plan?` · ${esc(cr.plan)}`:'';
-  const block=(label,value,meta,total)=>{
-    const n=Number(value), known=Number.isFinite(n), ratio=known&&Number(total)>0?Math.max(0,Math.min(100,n/Number(total)*100)):null;
-    return `<div class="pb"><div class="pb-label"><span>${label}</span><span>${esc(value)}</span></div>${ratio==null?'':`<div class="pb-track"><div class="pb-bar" style="width:${ratio}%;background:${ratio<15?'var(--warn)':'var(--ok)'}"></div></div>`}<div class="pb-meta">${esc(meta||'')}${plan}${when}</div></div>`;
+  const finite=v=>typeof v==='number'&&Number.isFinite(v);
+  const when=cr.fetched_at?' · 快照 '+promoTime(cr.fetched_at,''):'';
+  const block=(label,value,total,used,packs)=>{
+    const ratio=finite(used)&&used>=0&&finite(total)&&total>0?Math.max(0,Math.min(100,used/total*100)):null;
+    const percent=ratio==null?'':Math.round(ratio)+'%';
+    const meta=[label,'剩余 '+value,finite(used)?'已用 '+used:'已用未上报',finite(total)?'总额 '+total:'总额未上报',Number.isInteger(packs)&&packs>0?packs+' 个包':''].filter(Boolean).join(' · ')+when;
+    return `<div class="pb"><div class="pb-label"><span>可用 ${esc(value)}</span><span>${finite(used)?'已用 '+esc(used):'用量未上报'}${percent?' · '+percent:''}</span></div>${ratio==null?'':`<div class="pb-track"><div class="pb-bar" style="width:${ratio}%;background:${ratio>=85?'var(--warn)':'var(--ok)'}"></div></div>`}<div class="pb-meta">${esc(meta)}</div></div>`;
   };
   let out='';
-  if(cr.credits_pool_known===true)out+=block('剩余积分',cr.credits_pool_unlimited?'不限':cr.credits_pool_remain??'未上报','积分额度（不含未确认签到奖励）',null);
-  if(cr.remain_known===true&&cr.total_remain!=null){
-    const fast=cr.usage_model==='fast', n=Number(cr.total_remain);
-    out+=block(fast?'剩余速通次数':'套餐剩余额度',n<0?'不限':n,cr.used!=null?'已用 '+cr.used:'',fast?cr.fast_limit:cr.total);
+  if(cr.credits_pool_known===true)out+=block('积分',cr.credits_pool_unlimited?'不限':finite(cr.credits_pool_remain)?cr.credits_pool_remain:'未上报',cr.credits_pool_total,cr.credits_pool_used,cr.credits_pool_pack_count);
+  if(cr.remain_known===true&&finite(cr.total_remain)){
+    const fast=cr.usage_model==='fast';
+    out+=block(fast?'速通次数':'套餐额度',cr.total_remain<0?'不限':cr.total_remain,fast?cr.fast_limit:cr.total,fast?cr.fast_used:cr.used);
   }
-  if(!out)out=block('剩余额度','未上报',cr.fast_request_per>0?'快请求/月 '+cr.fast_request_per:'上游未提供可确认的剩余额度',null);
+  if(!out)out='<div class="pb"><div class="pb-label"><span>剩余额度</span><span>未上报</span></div>'+(cr.fast_request_per>0?`<div class="pb-meta">快请求/月 ${esc(cr.fast_request_per)}</div>`:'')+'</div>';
   return out;
 }
 
@@ -361,12 +350,20 @@ function card(a){
     ${a.error?`<div class="row"><span class="k">查询诊断</span><span>${esc(a.error)}</span></div>`:''}
     <div class="actions">${actions}</div></div>`;
 }
+let accountFilter="all";
 function renderAccounts(){
-  const filter=document.getElementById("accountFilter").value||"all";
-  const accounts=lastAccounts.filter(a=>filter==="all"||a.variant===filter);
+  const query=(document.getElementById("accountSearch").value||"").trim().toLocaleLowerCase();
+  const counts={all:lastAccounts.length,cn:0,solo:0,intl:0};
+  lastAccounts.forEach(a=>{if(a.variant in counts)counts[a.variant]++});
+  const filters=document.getElementById("accountFilters");
+  filters.innerHTML=[['all','全部'],['cn','CN'],['solo','SOLO'],['intl','Intl']].map(([key,label])=>`<button type="button" class="ftag${accountFilter===key?' active':''}" data-filter="${key}" aria-pressed="${accountFilter===key}">${label}<span class="cnt">${counts[key]}</span></button>`).join('');
+  filters.querySelectorAll('[data-filter]').forEach(btn=>btn.onclick=()=>{accountFilter=btn.dataset.filter;renderAccounts()});
+  const accounts=lastAccounts.filter(a=>(accountFilter==="all"||a.variant===accountFilter)&&(!query||[a.nickname,a.label,a.name,a.file,a.file_name,a.uid].some(v=>String(v||"").toLocaleLowerCase().includes(query))));
+  if(document.getElementById("accountSort").value==="name")accounts.sort((a,b)=>String(a.label||a.nickname||a.name||"").localeCompare(String(b.label||b.nickname||b.name||"")));
   const grid=document.getElementById("grid");
-  grid.innerHTML=accounts.length?accounts.map(card).join(""):'<div class="loading">该分区暂无账号</div>';
-  bindCardActions(grid);renderSummary(accounts);
+  grid.innerHTML=accounts.length?accounts.map(card).join(""):'<div class="loading">'+(query?'没有匹配的账号':'该分区暂无账号')+'</div>';
+  document.getElementById("accountCount").textContent=accounts.length+" / "+lastAccounts.length+" 个账号";
+  bindCardActions(grid);
 }
 async function accountAction(action,index,btn){
   const a=lastAccounts.find(x=>x.auth_index===index);if(!a)return;
@@ -387,9 +384,9 @@ async function accountAction(action,index,btn){
 function applyCreditsResult(a, res){
   // v0.12.28: 统一合并 /credits 结果到账号对象（含用量模型字段），
   // 供 progressHTML 按 fast/basic/unknown 渲染。
-  if(res.total_remain!=null || res.plan || res.usage_model){
+  if(res.total_remain!=null || res.plan || res.usage_model || res.credits_pool_known!=null){
     a.credits=Object.assign({}, a.credits||{}, {
-      total_remain: res.total_remain!=null?res.total_remain:(a.credits?a.credits.total_remain:0),
+      total_remain: res.total_remain,
       plan: res.plan||(a.credits?a.credits.plan:""),
       fetched_at: new Date().toISOString(),
       usage_model: res.usage_model||"legacy",
@@ -406,6 +403,9 @@ function applyCreditsResult(a, res){
       // v0.12.34: 官方口径积分池。
       credits_pool_known: !!res.credits_pool_known,
       credits_pool_remain: res.credits_pool_remain,
+      credits_pool_total: res.credits_pool_total,
+      credits_pool_used: res.credits_pool_used,
+      credits_pool_pack_count: res.credits_pool_pack_count,
       credits_pool_unlimited: !!res.credits_pool_unlimited
     });
   }
@@ -458,7 +458,7 @@ function updateOneCard(a){
     el.replaceWith(newCard);
     bindCardActions(newCard);
   }
-  renderSummary(lastAccounts.filter(x=>document.getElementById("accountFilter").value==="all"||x.variant===document.getElementById("accountFilter").value));
+
 }
 async function api(path, opts={}){
   // Unlike workbuddy, trae-* has no plugin-layer key check, so we do NOT
@@ -511,6 +511,7 @@ async function api(path, opts={}){
 }
 let loginStatusTimer=null, panelLoginState=sessionStorage.getItem(providerName+"-login-state")||"", panelLoginPolling=false;
 async function startPanelLogin(variant,btn){
+  document.getElementById("loginHelp").open=true;
   busy(btn,true);
   try{
     const d=await api("/login/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({variant})});
@@ -550,11 +551,12 @@ async function refreshLoginStatus(){
         el.textContent = d.outcome.ok ? "\u2713 最近一次登录已完成" : "\u2717 最近一次登录失败：" + om;
         el.title = om;
       }else{
-        el.textContent = "当前没有进行中的登录。在 CPA 主面板 OAuth 菜单发起登录后，这里会实时显示等待状态。";
+        el.textContent = "当前没有进行中的登录。可直接使用上方登录按钮。";
       }
       el.style.color="var(--mut)";
       return;
     }
+    document.getElementById("loginHelp").open=true;
     const age=d.age_seconds||0, ttl=d.ttl_seconds_remaining||0;
     const lines=[];
     if(d.stage)lines.push("阶段："+d.stage+(d.persistent?" · 可恢复":"")+(d.retryable?" · 可重试":""));
@@ -606,6 +608,7 @@ async function submitCallbackURL(btn){
 async function load(force, btn){
   const g=document.getElementById("grid");
   if(force){
+    modelCtlLoad();loadAutoCheckin();
     if(!btn) btn=document.getElementById("refreshBtn");
     busy(btn, true);
   }
@@ -620,7 +623,7 @@ async function load(force, btn){
     // Intl accounts share the factual credits query but do not support check-in.
     let intlAccounts=[];
     try{ const di=await api("/intl/accounts"); intlAccounts=di.accounts||[]; }catch(e){}
-    document.getElementById("svtime").textContent="服务器时间 "+(d.server_time||"");
+    document.getElementById("svtime").textContent="服务器 "+(d.server_time?promoTime(d.server_time,""):"时间未上报");
     if(d.error){
       g.innerHTML='<div class="loading">'+esc(d.error)+"</div>";
       if(force) toast("刷新失败", "err", d.error);
@@ -634,10 +637,11 @@ async function load(force, btn){
     (d.accounts||[]).forEach(a=>{ if(a.auth_index&&seenIdx.has(a.auth_index))return; if(a.auth_index)seenIdx.add(a.auth_index); accounts.push(Object.assign({variant:a.variant||"cn"},a)); });
     (intlAccounts||[]).forEach(a=>{ if(a.auth_index&&seenIdx.has(a.auth_index))return; if(a.auth_index)seenIdx.add(a.auth_index); accounts.push(Object.assign({variant:"intl"},a)); });
     lastAccounts=accounts;
+    if(d.promotions)renderPromotions(d.promotions);
 
     if(!accounts.length){
       g.innerHTML='<div class="loading">暂无 '+esc(providerName)+' 账号</div>';
-      renderSummary([]);
+      renderAccounts();
       if(force) toast("数据已刷新", "warn", "暂无账号");
       return;
     }
@@ -658,14 +662,6 @@ async function load(force, btn){
   }finally{
     if(force) busy(btn, false);
   }
-}
-function renderSummary(accounts){
-  const box=document.getElementById("summaryBox"), all=accounts||[];
-  if(!all.length){box.style.display="none";box.innerHTML="";return;}
-  const checked=all.filter(a=>a.variant!=="intl"&&a.checkin&&a.checkin.checked_in===true).length;
-  const known=all.filter(a=>a.credits&&(a.credits.remain_known===true||a.credits.credits_pool_known===true)).length;
-  box.style.display="block";
-  box.innerHTML=`<div class="summary-hd"><div class="summary-title">账号观察</div><div class="summary-meta">${all.length} 个账号 · 额度已知 ${known} · 今日已签 ${checked} · 禁用 ${all.filter(a=>a.disabled).length}</div></div><div class="summary-meta">不同额度单位不合计；签到奖励不计为余额。调度与分层策略在 staged 管理。</div>`;
 }
 function isCheckinDoneResult(res){return !!res&&!res.error&&res.confirmed===true;}
 function checkinResultToast(res){
@@ -747,7 +743,7 @@ async function refreshCredits(idx, btn){
       // v0.12.29: Free/SOLO 的真实剩余维度（pay_status 快请求/月）。
       detail=who+" · 快请求/月 "+res.fast_request_per;
     }else if(res.usage_model==="basic"&&res.remain_known){
-      detail=who+" · 套餐 "+(res.total_remain!=null?res.total_remain:"?")+" · 已用 "+(res.used!=null?res.used:0);
+      detail=who+" · 套餐 "+(res.total_remain!=null?res.total_remain:"?")+" · 已用 "+(res.used!=null?res.used:"未上报");
     }else if(res.credits_pool_known){
       // v0.12.34: 官方口径积分池。
       detail=who+" · 积分池 "+(res.credits_pool_unlimited?"不限":(Number(res.credits_pool_remain)||0));
@@ -772,7 +768,8 @@ document.getElementById("keyInput").addEventListener("keydown",e=>{if(e.key==="E
    子键 — 与 CPA 全局页同一份配置，无第二真相。被 trae 全局裸键禁用的模型
    锁定显示（徽标），本面板只管渠道子键，避免跨键歧义。 */
 const HOST_API="/v0/management";
-let modelCtlLoaded=false,modelCtlOpen=false,modelGroupsData=null,modelExclMap=null,modelRowOrder=[],modelEdits=new Map();
+let modelCtlLoaded=false,modelGroupsData=null,modelExclMap=null,modelRowOrder=[],modelEdits=new Map();
+let modelBusy=false,modelLoading=false,modelEpoch=0,modelStateValid=false;
 async function hostAPI(path,opts={}){
   const k=getKey();
   const r=await fetch(HOST_API+path,{...opts,credentials:'omit',headers:{...(opts.headers||{}),...authHeaders(k)}});
@@ -781,22 +778,36 @@ async function hostAPI(path,opts={}){
   if(!r.ok)throw new Error((d&&d.error)||("宿主 API HTTP "+r.status));
   return d;
 }
-function modelCtlToggle(btn){
-  const c=document.getElementById("modelCtlCard");
-  modelCtlOpen=!modelCtlOpen;
-  c.style.display=modelCtlOpen?"block":"none";
-  if(modelCtlOpen&&!modelCtlLoaded)modelCtlLoad();
-  if(btn)btn.blur();
+function modelStatus(message,error=false){const el=document.getElementById("modelStatus");el.textContent=message;el.className="model-status"+(error?" err":"");}
+function exclusionMap(response){
+  if(!response||!Object.prototype.hasOwnProperty.call(response,'oauth-excluded-models'))throw Error("宿主隐藏设置未返回，需刷新核实");
+  const map=response['oauth-excluded-models']===null?{}:response['oauth-excluded-models'];
+  if(!map||typeof map!=="object"||Array.isArray(map))throw Error("宿主隐藏设置未返回，需刷新核实");
+  for(const value of Object.values(map))if(!Array.isArray(value)||value.some(x=>typeof x!=="string"))throw Error("宿主隐藏设置格式异常");
+  return map;
 }
-async function modelCtlLoad(){
-  const box=document.getElementById("modelGroupsBox");
-  box.innerHTML='<div class="loading">加载中…</div>';
+function normalizedExclusions(values){return [...new Set(values.map(v=>v.trim().toLowerCase()).filter(Boolean))].sort();}
+function validateGroups(g){if(!g||g.error||!Array.isArray(g.groups))throw Error(g&&g.error||"模型目录未返回");return g;}
+async function modelCtlLoad(refresh=false,internal=false){
+  if(modelBusy&&!internal)return false;
+  const epoch=++modelEpoch;
+  if(refresh)modelMetadataAttemptAt=Date.now();
+  modelLoading=true;modelStateValid=false;document.getElementById("modelRefreshBtn").disabled=true;modelStatus(refresh?"正在刷新目录…":"正在读取模型设置…");
+  if(modelGroupsData)renderModelGroups();
   try{
-    const [g,e]=await Promise.all([api("/models/groups"),hostAPI("/oauth-excluded-models")]);
-    modelGroupsData=g;modelExclMap=(e&&e["oauth-excluded-models"])||{};modelRowOrder=[...(g.model_order||[])];modelEdits.clear();
-    modelCtlLoaded=true;
-    renderModelGroups();
-  }catch(err){box.innerHTML=`<div class="row"><span class="v err">${esc(err.message||String(err))}</span></div>`}
+    const [g,e]=await Promise.all([api("/models/groups"+(refresh?"?refresh=1":"")),hostAPI("/oauth-excluded-models")]);
+    if(epoch!==modelEpoch)return false;
+    const groups=validateGroups(g), exclusions=exclusionMap(e);
+    modelGroupsData=groups;modelExclMap=exclusions;modelRowOrder=[...(g.model_order||[])];modelEdits.clear();
+    modelCtlLoaded=true;modelStateValid=true;renderPromotions(g.promotions);
+    modelStatus("拖拽排序 · 隐藏 / 恢复自动保存");renderModelGroups();return true;
+  }catch(err){
+    if(epoch!==modelEpoch)return false;
+    if(modelGroupsData)modelGroupsData={...modelGroupsData,groups:modelGroupsData.groups.map(group=>({...group,models:(group.models||[]).map(model=>({...model,multiplier:null,multiplier_state:"stale"}))}))};
+    modelStateValid=false;renderPromotions(promotionsData?{...promotionsData,status:"unknown",items:(promotionsData.items||[]).map(item=>({...item,snapshot_stale:true}))}:null);modelStatus("读取失败，请刷新目录核实："+(err.message||String(err)),true);
+    if(modelGroupsData)renderModelGroups();else document.getElementById("modelGroupsBox").innerHTML='<div class="loading">模型信息暂不可用</div>';
+    return false;
+  }finally{if(epoch===modelEpoch){modelLoading=false;document.getElementById("modelRefreshBtn").disabled=modelBusy;}}
 }
 function realmExclList(realm){
   const m=modelExclMap||{};
@@ -829,64 +840,77 @@ function modelContextLabel(value){
   if(n>=1000)return String(n/1000)+"K";
   return String(n);
 }
+function modelMultiplierLabel(m){
+  if(m.multiplier_state==='stale')return '待刷新';
+  if(m.multiplier_state==='different')return Array.isArray(m.multipliers)&&m.multipliers.length?m.multipliers.filter(n=>typeof n==='number'&&Number.isFinite(n)).map(n=>n+'×').join(' / ')+'（账号差异）':'账号差异';
+  if(m.multiplier_state==='unknown')return '未上报';
+  return typeof m.multiplier==='number'&&Number.isFinite(m.multiplier)?m.multiplier+'×':'未上报';
+}
 function modelChannelCell(realm,m){
   if(!m)return '<span class="mg-meta">—</span>';
-  const locked=exclusionMatches(m.id,[...globalExclSet()]);
-  const key=realm+"\n"+m.id;
-  const checked=!locked&&(modelEdits.has(key)?modelEdits.get(key):!exclusionMatches(m.id,realmExclList(realm)));
-  const contexts=(m.context_lengths&&m.context_lengths.length?m.context_lengths:m.context_length>0?[m.context_length]:[]).filter(n=>Number.isFinite(Number(n))&&Number(n)>0);
-  const ctx=contexts.length?contexts.map(modelContextLabel).join(" / ")+"（只读）":"未上报";
-  const detail=m.id+" · "+(m.credentials||0)+"/"+(m.total||0)+" 凭证记录"+(contexts.length?" · 上下文 "+contexts.join(" / ")+" tokens":"")+(contexts.length>1?" · 账号差异":"");
-  const thinking=m.thinking==null?"默认未上报":typeof m.thinking==="string"?m.thinking:"未上报";
-  return `<div title="${escAttr(detail)}"><label class="mg-item${locked?' mg-locked':''}"><input type="checkbox" data-mg="${escAttr(realm)}" value="${escAttr(m.id)}"${checked?' checked':''}${locked?' disabled':''}>${locked?'全局锁定':'显示'}</label><div class="model-meta"><div>倍率 <span class="model-label">${m.multiplier==null?'未上报':esc(m.multiplier)}</span></div><div>思考 <span class="model-label">${esc(thinking)}</span></div><div>上下文 <span class="model-label">${esc(ctx)}</span></div></div></div>`;
+  const contexts=[...new Set((m.context_lengths&&m.context_lengths.length?m.context_lengths:m.context_length>0?[m.context_length]:[]).map(Number).filter(n=>Number.isFinite(n)&&n>0))];
+  // Highlight an explicit default or the sole current CPA-declared limit; never choose among account differences.
+  const defaultContext=Number(m.default_context_length);
+  const ctx=contexts.length?contexts.map(n=>`<span${n===defaultContext||(contexts.length===1&&Number(m.context_length)===n)?' class="ctx-default"':''}>${esc(modelContextLabel(n))}</span>`).join(' / '):'未上报';
+  const thoughts=Array.isArray(m.thinking_options)?m.thinking_options:(typeof m.thinking==='string'||typeof m.thinking==='boolean')?[m.thinking]:[];
+  const thinking=thoughts.length?thoughts.map(v=>`<span${m.default_thinking!=null&&v===m.default_thinking?' class="thinking-default"':''}>${esc(typeof v==='boolean'?(v?'开启':'关闭'):v)}</span>`).join(' / '):'未上报';
+  const detail=m.id+" · 倍率 "+modelMultiplierLabel(m)+" · "+(m.credentials||0)+"/"+(m.total||0)+" 凭证记录"+(contexts.length?" · 上下文 "+contexts.join(" / ")+" tokens":"")+(contexts.length>1?" · 账号差异":"");
+  return `<div class="realm-cell" title="${escAttr(detail)}"><div class="realm-facts"><span>倍率 ${esc(modelMultiplierLabel(m))}</span><span>思考 ${thinking}</span><span>上下文 ${ctx}</span></div></div>`;
 }
-
+function modelChannelAction(realm,m){
+  if(!m)return '';
+  const locked=exclusionMatches(m.id,[...globalExclSet()]),hidden=locked||exclusionMatches(m.id,realmExclList(realm));
+  const label={cn:'CN',solo:'SOLO',intl:'Intl'}[realm];
+  return `<button type="button" class="ftag${hidden?' hidden-model':''}" data-model-realm="${realm}" data-model-toggle="${escAttr(m.id)}"${locked||modelBusy||!modelStateValid?' disabled':''} title="${escAttr(m.id)}${locked?' · 全局锁定':''}">${label} ${locked?'锁定':hidden?'恢复':'隐藏'}</button>`;
+}
 function renderModelGroups(){
-  const box=document.getElementById("modelGroupsBox"), rows=catalogRows();
-  const notes=((modelGroupsData&&modelGroupsData.groups)||[]).map(g=>`${g.label}：${g.count||0} 模型 / ${g.credentials||0} 凭证${g.note?' · '+g.note:''}`).join("；");
-  box.innerHTML=`<div class="mg-meta">${esc(notes)}</div><div style="overflow:auto"><table class="model-table"><thead><tr><th>排序</th><th>模型ID</th><th>名字</th><th>CN</th><th>SOLO</th><th>Intl</th><th>操作</th></tr></thead><tbody>${rows.map((r,i)=>`<tr data-model-id="${escAttr(r.id)}"><td><button type="button" class="drag-handle" draggable="true" data-drag-index="${i}" aria-label="调整 ${escAttr(r.id)} 的排序" aria-keyshortcuts="ArrowUp ArrowDown" title="拖拽排序；聚焦后可用方向键调整">⠿</button></td><td><code>${esc(r.id)}</code></td><td>${esc(r.name)}</td>${['cn','solo','intl'].map(realm=>`<td>${modelChannelCell(realm,r.channels[realm])}</td>`).join('')}<td><button class="sec" data-copy="${escAttr(r.id)}">复制ID</button></td></tr>`).join('')||'<tr><td colspan="7">暂无已验证目录</td></tr>'}</tbody></table></div>`;
-  box.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{if(navigator.clipboard)navigator.clipboard.writeText(b.dataset.copy).catch(()=>toast("复制失败","warn"));});
-  box.querySelectorAll('input[data-mg]').forEach(input=>input.onchange=()=>modelEdits.set(input.dataset.mg+"\n"+input.value,input.checked));
+  const box=document.getElementById("modelGroupsBox"),rows=catalogRows();
+  document.getElementById('modelRefreshBtn').disabled=modelBusy||modelLoading;
+  box.setAttribute('aria-busy',String(modelBusy||modelLoading));
+  box.innerHTML=`<div class="model-table-wrap"><div class="model-table" role="table" aria-label="模型列表"><div class="model-head" role="row"><span>排序</span><span>模型 / 名字</span><span>CN</span><span>SOLO</span><span>Intl</span><span>操作</span></div><div class="model-rows">${rows.map((r,i)=>`<div class="model-row" role="row" data-model-id="${escAttr(r.id)}"><button type="button" class="drag-handle" draggable="${!modelBusy&&modelStateValid}" data-drag-index="${i}" aria-label="调整 ${escAttr(r.id)} 的排序" aria-keyshortcuts="ArrowUp ArrowDown" title="拖拽排序；方向键可调整"${modelBusy||!modelStateValid?' disabled':''}>⠿</button><div title="${escAttr(r.id)}"><div class="model-id">${esc(r.id)}</div>${r.name!==r.id?`<div class="model-name">${esc(r.name)}</div>`:''}</div>${['cn','solo','intl'].map(realm=>modelChannelCell(realm,r.channels[realm])).join('')}<div class="model-actions">${['cn','solo','intl'].map(realm=>modelChannelAction(realm,r.channels[realm])).join('')}</div></div>`).join('')||'<div class="loading">暂无已验证目录</div>'}</div></div></div>`;
+  box.querySelectorAll('[data-model-toggle]').forEach(btn=>btn.onclick=()=>modelToggle(btn.dataset.modelRealm,btn.dataset.modelToggle));
   let drag=null;
-  box.querySelectorAll('tr[data-model-id]').forEach(row=>{
+  box.querySelectorAll('[data-model-id]').forEach(row=>{
     const handle=row.querySelector('[data-drag-index]');
-    handle.ondragstart=ev=>{drag=row.dataset.modelId;if(ev.dataTransfer)ev.dataTransfer.setData('text/plain',drag)};
-    handle.onkeydown=ev=>{
+    handle.ondragstart=ev=>{if(modelBusy||!modelStateValid){ev.preventDefault();return}drag=row.dataset.modelId;if(ev.dataTransfer)ev.dataTransfer.setData('text/plain',drag)};
+    handle.onkeydown=async ev=>{
       if(ev.key!=="ArrowUp"&&ev.key!=="ArrowDown")return;
-      ev.preventDefault();
-      const from=Number(handle.dataset.dragIndex),delta=ev.key==="ArrowUp"?-1:1,to=from+delta;
+      ev.preventDefault();const from=Number(handle.dataset.dragIndex),delta=ev.key==="ArrowUp"?-1:1,to=from+delta;
       if(to<0||to>=rows.length)return;
-      modelMove(from,delta);
-      const moved=box.querySelector(`[data-drag-index="${to}"]`);if(moved)moved.focus();
+      await modelMove(from,delta);const moved=box.querySelector(`[data-drag-index="${to}"]`);if(moved)moved.focus();
     };
     row.ondragover=ev=>ev.preventDefault();
-    row.ondrop=ev=>{ev.preventDefault();const ids=catalogRows().map(x=>x.id), from=ids.indexOf(drag),to=ids.indexOf(row.dataset.modelId);if(from<0||to<0||from===to)return;ids.splice(to,0,ids.splice(from,1)[0]);modelRowOrder=ids;renderModelGroups();};
+    row.ondrop=async ev=>{ev.preventDefault();if(modelBusy||!modelStateValid)return;const ids=catalogRows().map(x=>x.id),from=ids.indexOf(drag),to=ids.indexOf(row.dataset.modelId);if(from<0||to<0||from===to)return;ids.splice(to,0,ids.splice(from,1)[0]);modelRowOrder=ids;await modelOrderSave();};
   });
 }
-function modelMove(index,delta){const ids=catalogRows().map(x=>x.id),to=index+delta;if(to<0||to>=ids.length)return;[ids[index],ids[to]]=[ids[to],ids[index]];modelRowOrder=ids;renderModelGroups();}
-async function modelOrderSave(btn){
+async function modelMove(index,delta){
+  if(modelBusy||!modelStateValid)return;
+  const ids=catalogRows().map(x=>x.id),to=index+delta;if(to<0||to>=ids.length)return;
+  [ids[index],ids[to]]=[ids[to],ids[index]];modelRowOrder=ids;await modelOrderSave();
+}
+async function modelOrderSave(){
+  if(modelBusy||!modelStateValid)return;
   const ids=catalogRows().map(x=>x.id);if(!ids.length)return;
-  busy(btn,true);
+  modelBusy=true;const epoch=++modelEpoch;modelStatus("正在保存排序并回读…");renderModelGroups();
   try{
     await hostAPI("/plugins/"+providerName+"/config",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({model_order:ids})});
     const [config,runtime]=await Promise.all([hostAPI("/plugins/"+providerName+"/config"),api("/models/groups")]);
-    if(JSON.stringify(config.model_order)!==JSON.stringify(ids)||JSON.stringify(runtime.model_order)!==JSON.stringify(ids))throw Error("宿主或运行时回读顺序不一致；配置可能尚未重载，请刷新核实");
-    modelGroupsData=runtime;modelRowOrder=[...runtime.model_order];renderModelGroups();toast("排序已保存并核实");
-  }catch(e){toast("排序未确认","warn",e.message)}finally{busy(btn,false)}
+    if(epoch!==modelEpoch)return;
+    validateGroups(runtime);
+    if(!config||JSON.stringify(config.model_order)!==JSON.stringify(ids)||JSON.stringify(runtime.model_order)!==JSON.stringify(ids))throw Error("宿主或运行时回读顺序不一致");
+    modelGroupsData=runtime;modelRowOrder=[...runtime.model_order];renderPromotions(runtime.promotions);modelStatus("排序已保存并核实");toast("排序已保存并核实");
+  }catch(e){
+    if(epoch===modelEpoch){toast("排序未确认","err",e.message);await modelCtlLoad(false,true);modelStatus("排序未确认；"+(modelStateValid?"已重新读取当前设置":"请刷新目录核实"),true);}
+  }finally{modelBusy=false;renderModelGroups()}
 }
-async function modelGroupsRefresh(btn){
-  busy(btn,true);
-  try{
-    const g=await api("/models/groups?refresh=1");
-    modelGroupsData=g;
-    if(modelExclMap===null){
-      try{const e=await hostAPI("/oauth-excluded-models");modelExclMap=(e&&e["oauth-excluded-models"])||{}}catch(_){}
-    }
-    renderModelGroups();
-    const have=(g.groups||[]).filter(x=>x.count).length;
-    toast("模型目录已刷新","ok",have+" 个渠道有目录");
-  }catch(e){toast("刷新失败","err",e.message)}
-  busy(btn,false);
+async function modelGroupsRefresh(){
+  if(modelBusy||modelLoading)return;
+  if(await modelCtlLoad(true))toast("模型目录已刷新");
+}
+async function modelToggle(realm,id){
+  if(modelBusy||!modelStateValid||!['cn','solo','intl'].includes(realm)||exclusionMatches(id,[...globalExclSet()]))return;
+  modelEdits=new Map([[realm+"\n"+id,exclusionMatches(id,realmExclList(realm))]]);
+  await modelGroupsSave();
 }
 function exclusionPatch(existing,realm){
   let next=[...existing];
@@ -901,25 +925,147 @@ function exclusionPatch(existing,realm){
   }
   return next;
 }
-async function modelGroupsSave(btn){
-  busy(btn,true);
+async function modelGroupsSave(){
+  if(modelBusy||!modelStateValid||!modelEdits.size)return;
+  modelBusy=true;const epoch=++modelEpoch,edits=new Map(modelEdits);modelStatus("正在保存隐藏设置并回读…");renderModelGroups();
   try{
-    // Reload the single source of truth; preserve absent models and wildcard
-    // rules, and never copy provider-global locks into sub-channel exclusions.
-    const fresh=await hostAPI("/oauth-excluded-models");modelExclMap=fresh&&fresh["oauth-excluded-models"]||{};
-    for(const realm of ["cn","solo","intl"]){
-      const key="trae-"+realm, old=modelExclMap[key]||[], next=exclusionPatch(old,realm);
-      if(JSON.stringify(next)===JSON.stringify(old))continue;
-      await hostAPI("/oauth-excluded-models",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({provider:key,models:next})});modelExclMap[key]=next;
+    const fresh=exclusionMap(await hostAPI("/oauth-excluded-models"));
+    if(epoch!==modelEpoch)return;
+    modelExclMap=fresh;modelEdits=edits;
+    for(const [key] of edits){if(exclusionMatches(key.split("\n")[1],[...globalExclSet()]))throw Error("模型已被全局锁定");}
+    const expected={};
+    for(const realm of ['cn','solo','intl']){
+      if(![...edits.keys()].some(key=>key.startsWith(realm+"\n")))continue;
+      const key='trae-'+realm,old=fresh[key]||[],next=exclusionPatch(old,realm);expected[key]=next;
+      if(JSON.stringify(next)!==JSON.stringify(old))await hostAPI('/oauth-excluded-models',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:key,models:next})});
     }
-    modelEdits.clear();renderModelGroups();toast("隐藏设置已保存");
-  }catch(e){toast("保存失败","err",e.message)}finally{busy(btn,false)}
+    const verified=exclusionMap(await hostAPI('/oauth-excluded-models'));
+    if(epoch!==modelEpoch)return;
+    for(const [key,list] of Object.entries(expected))if(JSON.stringify(normalizedExclusions(verified[key]||[]))!==JSON.stringify(normalizedExclusions(list)))throw Error("宿主隐藏设置回读不一致");
+    for(const [key,show] of edits){if(show&&exclusionMatches(key.split("\n")[1],verified.trae||[]))throw Error("回读显示模型已被全局锁定");}
+    modelExclMap=verified;modelEdits.clear();modelStatus("隐藏设置已保存并核实");toast("隐藏设置已保存并核实");
+  }catch(e){
+    if(epoch===modelEpoch){modelEdits.clear();toast("隐藏设置未确认","err",e.message);await modelCtlLoad(false,true);modelStatus("隐藏设置未确认；"+(modelStateValid?"已重新读取当前设置":"请刷新目录核实"),true);}
+  }finally{modelBusy=false;renderModelGroups()}
+}
+let promotionsData=null;
+function promoTimestamp(value){return typeof value==='number'?value*1000:typeof value==='string'&&value?Date.parse(value):NaN;}
+function promoTime(value,zone){
+  if(value==null||value==='')return '';
+  const date=new Date(promoTimestamp(value));if(!Number.isFinite(date.getTime()))return String(value);
+  if(!zone)return date.toISOString().replace('T',' ').replace('.000Z',' UTC');
+  try{return new Intl.DateTimeFormat('zh-CN',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date);}catch(e){return String(value);}
+}
+function promoWeekdays(days){
+  if(!Array.isArray(days)||!days.length)return '';
+  if(!days.every(n=>Number.isInteger(n)&&n>=1&&n<=7))return 'weekday '+days.join('/');
+  const ordered=[...new Set(days)].sort((a,b)=>a-b),key=ordered.join(',');
+  if(key==='1,2,3,4,5,6,7')return '每天';
+  if(key==='1,2,3,4,5')return '周一至周五';
+  if(key==='6,7')return '周末';
+  return ordered.map(n=>'周'+['一','二','三','四','五','六','日'][n-1]).join('/');
+}
+function promoWindow(window,sharedZone=''){
+  const minute=n=>Number.isInteger(n)&&n>=0&&n<=1440?String(Math.floor(n/60)).padStart(2,'0')+':'+String(n%60).padStart(2,'0'):'?';
+  const start=window.start_minute,end=window.end_minute;
+  const days=promoWeekdays(window.weekdays);
+  return (days?days+' · ':'')+minute(start)+'–'+minute(end)+(Number.isInteger(start)&&Number.isInteger(end)&&end<start?'（跨午夜）':'')+(window.time_zone&&window.time_zone!==sharedZone?' · '+window.time_zone:'');
+}
+function promoState(item,data){
+  const states=['active','upcoming','expired','ended','inactive','unknown'];
+  // The server owns timezone/window evaluation. No local-time activation guesses.
+  const status=states.includes(item.status)?item.status:'unknown';
+  const now=promoTimestamp(data.server_time),end=promoTimestamp(item.end_at);
+  if(Number.isFinite(now)&&Number.isFinite(end)&&now>=end)return 'expired';
+  if(status==='expired'||status==='ended')return status;
+  if(item.snapshot_stale===true)return 'unknown';
+  return status;
+}
+function groupedPromotions(data){
+  const groups=new Map();
+  for(const item of Array.isArray(data.items)?data.items:[]){
+    const state=promoState(item,data);
+    // Deduplicate only identical facts. Different realms, prices, models,
+    // time windows or states must remain separate account-scoped observations.
+    const key=JSON.stringify({realm:item.realm,models:item.models||[item.model_id||item.model||''],title:item.title,kind:item.kind,state,
+      discount_type:item.discount_type,discount_percent:item.discount_percent,factor:item.factor,multiplier:item.multiplier,base_multiplier:item.base_multiplier,
+      start_at:item.start_at,end_at:item.end_at,time_zone:item.time_zone,time_windows:item.time_windows,status_reason:item.status_reason,next_change:item.next_change});
+    if(!groups.has(key))groups.set(key,{...item,_state:state,_scopes:new Set()});
+    if(typeof item.account_scope==='string'&&item.account_scope)groups.get(key)._scopes.add(item.account_scope);
+  }
+  const rank={active:0,upcoming:1,inactive:2,unknown:3,expired:4,ended:4};
+  return [...groups.values()].sort((a,b)=>rank[a._state]-rank[b._state]);
+}
+function promoRow(item,zone){
+  const state=item._state,on=state==='active',label={active:'进行中',upcoming:'未开始',expired:'已结束',ended:'已结束',inactive:'时段外',unknown:'待核实'}[state];
+  const models=Array.isArray(item.models)?item.models.join(' / '):item.model_id||item.model||'';
+  const title=({current:'当前优惠',promotion:'限时活动',discount:'折扣活动'})[item.title||item.kind]||item.title||item.kind||'上游活动';
+  const price=typeof item.multiplier==='number'?item.multiplier+'×':typeof item.factor==='number'?'折扣系数 '+item.factor:typeof item.discount_percent==='number'?item.discount_percent+'%':'倍率未上报';
+  const windowItems=Array.isArray(item.time_windows)?item.time_windows:[];
+  const windowZones=[...new Set(windowItems.map(w=>w.time_zone).filter(Boolean))];
+  const timeZone=item.time_zone||zone||(windowZones.length===1?windowZones[0]:'');
+  const windows=windowItems.map(w=>promoWindow(w,timeZone)).join('；');
+  const range=[item.start_at?promoTime(item.start_at,timeZone)+' 起':'',item.end_at?promoTime(item.end_at,timeZone)+' 止':''].filter(Boolean).join(' → ');
+  const schedule=[windows,range,timeZone,item.next_change?'下次变化 '+promoTime(item.next_change,timeZone):''].filter(Boolean).join(' · ');
+  const scopes=[...item._scopes];
+  return `<div class="promo-row ${on?'on':'off'}"><span class="promo-badge${on?' on':''}">${esc(title)}</span><span class="promo-model" title="${escAttr(models)}">${esc(models||'范围未上报')}</span><span class="promo-price">${esc(price)}</span><span class="promo-realm" title="${escAttr(scopes.join(' / '))}">${esc(({cn:'CN',solo:'SOLO',intl:'Intl'})[item.realm]||item.realm||'范围待核实')}${scopes.length?' · '+scopes.length+' 个账号':''}</span><span class="promo-state${on?' on':''}">${label}${schedule?'<br>'+esc(schedule):''}</span></div>`;
+}
+function renderPromotions(data){
+  promotionsData=data||{status:'unknown',items:[]};data=promotionsData;
+  const items=groupedPromotions(data),active=items.filter(i=>i._state==='active').length,known=data.status==='known';
+  const inactive=items.filter(i=>i._state==='upcoming'||i._state==='inactive').length,unknown=items.filter(i=>i._state==='unknown').length;
+  const count=document.getElementById('promoCount');count.textContent=known||items.length?active+' 个进行中 · '+inactive+' 未生效 · '+unknown+' 待核实'+(!known?' · 覆盖待核实':''):'待核实';count.className='promo-live'+(active?'':' zero');
+  const zone=data.time_zone||data.timezone||'';
+  document.getElementById('promoMeta').textContent=(data.server_time?'服务器 '+promoTime(data.server_time,zone)+(zone?' · '+zone:'')+' · ':'')+(known?'活动快照':items.length?'活动快照 · 覆盖待核实':'活动信息未上报');
+  const rows=items.map(item=>promoRow(item,zone));
+  document.getElementById('promoList').innerHTML=rows.slice(0,6).join('')+(rows.length>6?`<details id="promoMore"><summary class="promo-meta">展开其余 ${rows.length-6} 项</summary><div class="promo-list">${rows.slice(6).join('')}</div></details>`:'')||(known?'<div class="promo-meta">当前快照未列出活动</div>':'<div class="promo-meta">待上游提供可核实信息</div>');
+}
+// Only metadata GETs: never couple login polling or check-in to this timer.
+let modelMetadataAttemptAt=0,modelInitialRefreshTried=false,modelHandledBoundary=0;
+async function refreshModelMetadata(initial=false){
+  if(document.hidden||modelBusy||modelLoading)return;
+  const now=Date.now();
+  const boundaries=((promotionsData&&promotionsData.items)||[]).map(i=>promoTimestamp(i.next_change)).filter(n=>Number.isFinite(n)&&n<=now&&n>modelHandledBoundary);
+  const boundary=boundaries.length?Math.max(...boundaries):0;
+  const needInitial=initial&&!modelInitialRefreshTried&&(!promotionsData||promotionsData.status!=='known');
+  if(!needInitial&&!boundary&&now-modelMetadataAttemptAt<15*60*1000)return;
+  modelInitialRefreshTried=true;modelMetadataAttemptAt=now;if(boundary)modelHandledBoundary=boundary;
+  await modelCtlLoad(true);
+}
+async function startModelMetadata(){
+  modelMetadataAttemptAt=Date.now();
+  if(await modelCtlLoad())await refreshModelMetadata(true);
+}
+setInterval(()=>refreshModelMetadata(),60000);
+if(document.addEventListener)document.addEventListener('visibilitychange',()=>{if(!document.hidden)refreshModelMetadata()});
+let autoCheckinEpoch=0,autoCheckinBusy=false,autoCheckinKnown=false,autoCheckinValue=true;
+function configuredCheckin(config){if(!config||typeof config!=="object"||Array.isArray(config)||config.error)throw Error("自动签到配置未返回");if(config.checkin_auto!=null&&typeof config.checkin_auto!=="boolean")throw Error("自动签到配置格式异常");return config.checkin_auto!==false;}
+async function loadAutoCheckin(){
+  if(autoCheckinBusy)return;
+  const epoch=++autoCheckinEpoch,input=document.getElementById('autoCheckin');input.disabled=true;autoCheckinKnown=false;
+  try{const config=await hostAPI('/plugins/'+providerName+'/config');if(epoch!==autoCheckinEpoch)return;autoCheckinValue=configuredCheckin(config);input.checked=autoCheckinValue;autoCheckinKnown=true;document.getElementById('autoCheckinStatus').textContent='';}
+  catch(e){if(epoch===autoCheckinEpoch)document.getElementById('autoCheckinStatus').textContent='待核实';}
+  finally{if(epoch===autoCheckinEpoch)input.disabled=!autoCheckinKnown;}
+}
+async function saveAutoCheckin(input){
+  if(autoCheckinBusy||!autoCheckinKnown)return;
+  const value=input.checked;autoCheckinBusy=true;input.disabled=true;++autoCheckinEpoch;
+  document.getElementById('autoCheckinStatus').textContent='保存中';
+  try{
+    await hostAPI('/plugins/'+providerName+'/config',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({checkin_auto:value})});
+    const [config,status]=await Promise.all([hostAPI('/plugins/'+providerName+'/config'),api('/status')]);
+    if(configuredCheckin(config)!==value||!status||status.checkin_auto!==value)throw Error('宿主或运行时回读不一致');
+    autoCheckinValue=value;toast('自动签到设置已保存并核实');
+  }catch(e){toast('自动签到设置未确认','err',e.message);}
+  finally{autoCheckinBusy=false;await loadAutoCheckin();}
 }
 /* Start theme sync watcher (parent MutationObserver + standalone prefers-color-scheme listener). */
 if(window.__traeThemeSync)window.__traeThemeSync();
 /* trae plugins don't require a key on the plugin side; attempt the initial
    load directly. If the CPA host middleware returns 401, the auth box surfaces. */
 load(false);
+startModelMetadata();
+loadAutoCheckin();
 </script>
 </body>
 </html>

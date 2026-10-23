@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -33,14 +34,21 @@ func modelGroupVariantLabel(variant string) string {
 // modelGroupEntry is one catalog row. Name carries the display name when the
 // snapshot/discovery provided one.
 type modelGroupEntry struct {
-	ID             string   `json:"id"`
-	BaseID         string   `json:"base_id"`
-	Name           string   `json:"name,omitempty"`
-	ContextLength  int64    `json:"context_length,omitempty"`
-	ContextLengths []int64  `json:"context_lengths,omitempty"`
-	Credentials    int      `json:"credentials"`
-	Multiplier     *float64 `json:"multiplier"`
-	Thinking       any      `json:"thinking"`
+	ID                 string              `json:"id"`
+	BaseID             string              `json:"base_id"`
+	Name               string              `json:"name,omitempty"`
+	ContextLength      int64               `json:"context_length,omitempty"`
+	ContextLengths     []int64             `json:"context_lengths,omitempty"`
+	Credentials        int                 `json:"credentials"`
+	Multiplier         *float64            `json:"multiplier"`
+	Thinking           any                 `json:"thinking"`
+	ThinkingState      string              `json:"thinking_state"`
+	Context            *int64              `json:"context"`
+	ContextState       string              `json:"context_state"`
+	MultiplierState    string              `json:"multiplier_state"`
+	Multipliers        []float64           `json:"multipliers"`
+	Facts              []accountModelFacts `json:"facts"`
+	UnknownCredentials int                 `json:"unknown_credentials"`
 }
 
 // modelGroup is one variant's catalog as the panel picker consumes it.
@@ -57,10 +65,11 @@ type modelGroup struct {
 }
 
 type modelGroupsResponse struct {
-	Groups        []modelGroup `json:"groups"`
-	Order         []string     `json:"model_order"`
-	CandidateOnly bool         `json:"candidate_only"`
-	Hint          string       `json:"hint"`
+	Groups        []modelGroup            `json:"groups"`
+	Order         []string                `json:"model_order"`
+	CandidateOnly bool                    `json:"candidate_only"`
+	Hint          string                  `json:"hint"`
+	Promotions    modelPromotionsResponse `json:"promotions"`
 }
 
 // variantCatalogEntry is one credential's contribution to a variant catalog scan.
@@ -114,8 +123,9 @@ func handleModelGroupsQuery(req pluginapi.ManagementRequest) (int, any) {
 		groups = append(groups, buildModelGroup(variant, perVariant[variant], refresh))
 	}
 	return http.StatusOK, modelGroupsResponse{
-		Groups: groups,
-		Order:  currentModelOrder(), CandidateOnly: true,
+		Groups:     groups,
+		Promotions: promotionsForGroups(groups, time.Now()),
+		Order:      currentModelOrder(), CandidateOnly: true,
 		Hint: "勾选=启用；取消勾选保存后该模型从渠道注册列表移除（ID 带渠道后缀）。与 CPA 全局页驱动同一份 oauth-excluded-models 配置。",
 	}
 }
@@ -145,6 +155,10 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 				models = fresh
 				// A refresh can legitimately return last-good; do not relabel it fresh.
 				g.Source = "queried"
+				reloadCatalogSnapshot(e)
+				if e.snapshot != nil && e.snapshot.FetchedAt > g.FetchedAt {
+					g.FetchedAt = e.snapshot.FetchedAt
+				}
 			}
 		}
 		seen := map[string]bool{}
@@ -190,6 +204,7 @@ func buildModelGroup(variant string, entries []*variantCatalogEntry, refresh boo
 		}
 		g.Models = append(g.Models, *row)
 	}
+	enrichModelGroup(&g, entries, time.Now())
 	g.Count = len(g.Models)
 	g.NeedsRefresh = g.Count == 0
 	if refresh {

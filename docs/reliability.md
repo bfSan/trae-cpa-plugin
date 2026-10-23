@@ -62,10 +62,23 @@ The panel lists model ID/name with CN/SOLO/Intl columns, supports drag-handle or
 
 Per-account discovery may fall back only to that account's own snapshot with matching token/variant provenance. Missing or malformed identity does not acquire the global static union as entitlements. The static response is empty; per-account discovery supplies registrations. The panel's union is explicitly a candidate view, with account differences preserved.
 
-The current Trae parser has evidence for a single context length, not user-selectable tiers. The UI therefore shows a read-only length and no manufactured 200K/400K/1M switch. Missing multiplier/reasoning facts remain unreported, not free/1x/high defaults. Default labels do not carry selected styling. No check-in history, routing-pool controls or reset-to-account-default control is introduced.
+The current Trae parser has evidence for a single context length, not user-selectable tiers. The UI therefore shows a read-only length and no manufactured 200K/400K/1M switch. Missing multiplier/reasoning facts remain unreported, not free/1x/high defaults. As of 0.13.1, explicitly reported defaults use the WorkBuddy highlight style. A known single current context length is emphasized without inventing a default or a switching capability. No check-in history, routing-pool controls or reset-to-account-default control is introduced.
 
 ## Validation and rollout
 
 Run offline Go race tests, `go vet`, panel Node tests and `scripts/check-release.py`. Tests cover route exclusivity, bridge envelopes/streaming, mutation uncertainty, per-state OAuth recovery, manual-state preservation, stale refresh rejection, account-local models and check-in confirmation. Live probes remain opt-in and are not part of the release test command.
 
 Deployment must back up the old library, atomically install a new inode, restart CPA and verify the registered version, loaded inode/hash, panel contract and service health. No real claim, login or paid model experiment is required to validate this implementation. Offline tests and successful loading do not prove new upstream context/reasoning capabilities.
+
+
+## 0.13.1 presentation and metadata update
+
+The permanent page now puts account cards first, upstream activities second and the model list last. There is no model-management opener or account-observation summary. Login recovery is retained in a compact expandable area. Account filters/search are local display controls, never routing policy. Model hide/restore and drag order save immediately with busy protection, host/runtime readback and failure recovery.
+
+Pricing and promotions are read from the already-used `get_detail_param` response rather than fabricated or manually maintained. `display_contact_config` can be a JSON string or object. `consumption_rate.data.rate` and `activity_discount.data.current.consumption_rate` are observed payable rates; campaign `after_consumption_rate` is its reported campaign rate. Discount 10 means paying 10%, not a multiplier applied again to an already-discounted rate. Membership/subsidy candidates without eligibility evidence remain uncertain.
+
+Activity windows use explicit named time zones, ISO weekdays and overnight start-day attribution. Missing time zones do not default to the browser's zone. Metadata has a 90-minute freshness bound; crossing a known window boundary invalidates an observed current price until refreshed. The visible panel refreshes metadata periodically and at known transitions; failures mark old evidence stale. Account-specific differences and unobserved peers are not flattened into a universally valid rate. Ordinary no-discount current prices are not activity cards.
+
+Account credit progress uses the same eligible credit packages and rounding basis as the reported balance. It excludes check-in rewards. The used portion is the consumed part of the current finite pool, not an all-time spend counter; unknown/unlimited totals do not get a fabricated percentage.
+
+The official Max-context capability is real, but it must not be conflated with the current `solo_work_lite` request lane. See [the protocol investigation](trae-max-context.md). This release does not silently advertise/enable 1M on the existing CN executor.

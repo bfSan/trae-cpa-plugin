@@ -447,6 +447,7 @@ type ModelInfo struct {
 	Name          string
 	ContextWindow int64 // = context_window_tokens.dev（目录未给则 0）
 	MaxTokens     int64 // 目录不透出输出上限，恒 0（model_detail_list 为加密参数）
+	Facts         ModelFacts
 }
 
 // soloAgentOnlyDeadNames 目录里的死模型精确名单（issue #9，2026-09-21 双账号
@@ -509,13 +510,14 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 	}
 	var resp struct {
 		ConfigInfoList []struct {
-			ConfigName          string `json:"config_name"`
-			ConfigSwitch        *bool  `json:"config_switch"`
-			IsInvisibleToUser   *bool  `json:"is_invisible_to_user"`
-			ContextWindowTokens struct {
-				Dev int64 `json:"dev"`
-			} `json:"context_window_tokens"`
-			DisplayConfig struct {
+			ConfigName           string          `json:"config_name"`
+			DisplayContactConfig json.RawMessage `json:"display_contact_config"`
+			NewVersion           json.RawMessage `json:"new_version"`
+			Newversion           json.RawMessage `json:"newversion"`
+			ConfigSwitch         *bool           `json:"config_switch"`
+			IsInvisibleToUser    *bool           `json:"is_invisible_to_user"`
+			ContextWindowTokens  json.RawMessage `json:"context_window_tokens"`
+			DisplayConfig        struct {
 				DisplayName string `json:"display_name"`
 			} `json:"display_config"`
 		} `json:"config_info_list"`
@@ -542,10 +544,18 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		if configIsSoloAgentOnly(cfg.ConfigName) {
 			continue
 		}
+		version := cfg.NewVersion
+		if len(version) == 0 {
+			version = cfg.Newversion
+		}
+		contexts := parseModelContexts(cfg.ContextWindowTokens)
+		facts := parseModelFacts(cfg.DisplayContactConfig, contexts["dev"], version)
+		facts.Contexts = contexts
 		out = append(out, ModelInfo{
 			ID:            cfg.ConfigName,
 			Name:          cfg.DisplayConfig.DisplayName,
-			ContextWindow: cfg.ContextWindowTokens.Dev,
+			ContextWindow: contexts["dev"],
+			Facts:         facts,
 		})
 	}
 	if len(out) == 0 {
@@ -1125,9 +1135,13 @@ func FastRequestUsage(packs []EntitlementPack, dashboardPayload bool) (available
 // is_credits_billing=true 即积分计费账户（官方以此决定渲染积分池）。
 // 注意与 checkin_credits/status 的 credits（签到钱包）是两笔钱。
 type CreditsPoolInfo struct {
-	Remain    int64
-	Known     bool
-	Unlimited bool
+	Remain         int64
+	Known          bool
+	Unlimited      bool
+	Total          int64
+	Used           int64
+	BreakdownKnown bool
+	PackCount      int
 }
 
 // CreditsPoolUsage 按官方公式聚合积分池。可见性过滤与 FastRequestUsage
@@ -1161,7 +1175,9 @@ func CreditsPoolUsage(packs []EntitlementPack, isCreditsBilling bool) CreditsPoo
 		return CreditsPoolInfo{Known: isCreditsBilling}
 	}
 	unlimited := false
-	var total int64
+	var total, capacity int64
+	packCount := 0
+	breakdownKnown := true
 	for _, p := range filtered {
 		q := p.EffectiveQuota()
 		if q.CreditsLimit == nil {
@@ -1171,9 +1187,18 @@ func CreditsPoolUsage(packs []EntitlementPack, isCreditsBilling bool) CreditsPoo
 			unlimited = true
 			continue
 		}
+		if *q.CreditsLimit < 0 {
+			breakdownKnown = false
+			continue
+		}
+		capacity += *q.CreditsLimit
+		packCount++
 		used := float64(0)
 		if p.Usage.CreditsAmount != nil {
 			used = *p.Usage.CreditsAmount
+		}
+		if used < 0 {
+			breakdownKnown = false
 		}
 		left := float64(*q.CreditsLimit) - used
 		if left < 0 {
@@ -1184,7 +1209,7 @@ func CreditsPoolUsage(packs []EntitlementPack, isCreditsBilling bool) CreditsPoo
 	if unlimited {
 		return CreditsPoolInfo{Remain: -1, Known: true, Unlimited: true}
 	}
-	return CreditsPoolInfo{Remain: total, Known: true}
+	return CreditsPoolInfo{Remain: total, Known: true, Total: capacity, Used: capacity - total, BreakdownKnown: breakdownKnown && capacity >= total && packCount > 0, PackCount: packCount}
 }
 
 // ---- v0.12.29: ide_user_pay_status（CN 套餐 detail/quota 数据源）----
