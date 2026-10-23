@@ -881,9 +881,10 @@ function modelChannelCell(realm,m){
   const ctx=contexts.length?contexts.map(n=>`<span${effective.length===1&&n===declared?' class="ctx-default"':''}>${esc(modelContextLabel(n))}</span>`).join(' / '):'未上报';
   const explicitThinking=(typeof m.thinking==='boolean'||typeof m.thinking==='string'&&m.thinking!=='')&&m.thinking_state!=='unknown'&&m.thinking_state!=='different';
   const thoughts=[...new Set([...(Array.isArray(m.thinking_options)?m.thinking_options:[]),...(explicitThinking?[m.thinking]:[])].filter(v=>typeof v==='boolean'||typeof v==='string'))];
-  const thinking=thoughts.length?thoughts.map(v=>`<span${explicitThinking&&v===m.thinking?' class="thinking-default"':''}>${esc(typeof v==='boolean'?(v?'开启':'关闭'):v)}</span>`).join(' / '):'未上报';
-  const evidence=facts.map(f=>f.context_evidence).filter(e=>e&&e.kind==='verified_input'&&Number(e.observed_input_tokens)>0);
-  const referenceThinking=[...new Set(catalog.flatMap(c=>Array.isArray(c.thinking_options)?c.thinking_options:[]))];
+  const referenceThinking=[...new Set(catalog.flatMap(c=>Array.isArray(c.thinking_options)?c.thinking_options:[]).filter(v=>typeof v==='string'))];
+  const thinking=thoughts.length?thoughts.map(v=>`<span${explicitThinking&&v===m.thinking?' class="thinking-default"':''}>${esc(typeof v==='boolean'?(v?'开启':'关闭'):v)}</span>`).join(' / '):(referenceThinking.length?referenceThinking.map(v=>`<span>${esc(v)}</span>`).join(' / ')+'<span class="mg-meta">（目录参考）</span>':'未上报');
+  const evidence=facts.map(f=>f.context_evidence).filter(e=>e&&['verified_input','upstream_usage_and_markers'].includes(e.kind)&&Number(e.observed_input_tokens)>0);
+
   const detail=m.id+' · 倍率 '+modelMultiplierLabel(m)+' · '+(m.credentials||0)+'/'+(m.total||0)+' 凭证记录'+
     (contexts.length?' · 目录档位（上游参考）；加粗为当前CPA声明，非模式开关':'')+
     (effective.length?' · CPA声明 '+effective.map(modelContextLabel).join(' / ')+(effective.length>1?'（账号差异）':''):'')+

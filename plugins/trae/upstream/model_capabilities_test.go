@@ -5,6 +5,7 @@ import (
 	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -71,5 +72,38 @@ func TestCapabilityNumericAndMultiWindowParsing(t *testing.T) {
 	}
 	if c.OutputMaxTokens != nil || c.ThinkingDefault != "" || len(c.ThinkingOptions) != 2 {
 		t.Fatalf("guessed unsupported limit/default %+v", c)
+	}
+}
+
+func TestCapabilityCatalogLargerThanGenericJSONLimit(t *testing.T) {
+	large := `{"ignored_encrypted_detail":"` + strings.Repeat("a", (1<<20)+64) + `","config_info_list":[{"config_name":"m","display_config":{"display_name":"M","max_mode":true},"context_window_tokens":{"dev":200000,"max":1000000}}]}`
+	calls := 0
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return jsonResp(200, `{"config_info_list":[{"config_name":"m","display_config":{"display_name":"M"},"context_window_tokens":{"dev":200000}}]}`), nil
+		}
+		return jsonResp(200, large), nil
+	})
+	got, err := c.FetchModels(&auth.Auth{Variant: "cn", AccessToken: "mock"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Facts.CapabilityStatus != "complete" || len(got[0].Facts.CapabilityCatalog) != 2 || got[0].Facts.CapabilityCatalog[1].Contexts["max"] != 1000000 {
+		t.Fatal("large catalog was truncated")
+	}
+}
+func TestCapabilityOversizeIsExplicitPartialNotSilentTruncation(t *testing.T) {
+	calls := 0
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return jsonResp(200, `{"config_info_list":[{"config_name":"m","display_config":{"display_name":"M"}}]}`), nil
+		}
+		return jsonResp(200, strings.Repeat("x", maxModelCatalogBytes+1)), nil
+	})
+	got, err := c.FetchModels(&auth.Auth{Variant: "cn", AccessToken: "mock"})
+	if err != nil || len(got) != 1 || got[0].Facts.CapabilityStatus != "partial" || calls != 2 {
+		t.Fatal("oversize catalog was accepted or retried")
 	}
 }

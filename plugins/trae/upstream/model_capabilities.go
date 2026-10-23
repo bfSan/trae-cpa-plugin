@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/bfSan/trae-cpa-plugin/plugins/trae/auth"
+	"github.com/bfSan/trae-cpa-plugin/plugins/trae/netroute"
 )
 
 // ModelCapability is a source-scoped declaration, not execution entitlement.
@@ -179,7 +181,7 @@ func (c *Client) fetchModelCatalog(a *auth.Auth, function string) ([]catalogMode
 		return nil, e
 	}
 	SOLOHeaders(req, a, false)
-	data, e := c.doJSON(req)
+	data, e := c.readModelCatalogJSON(req)
 	if e != nil {
 		return nil, e
 	}
@@ -223,4 +225,27 @@ func (c *Client) enrichCapabilities(a *auth.Auth, models []ModelInfo) {
 		}
 		models[i].Facts.CapabilityCatalog = append(models[i].Facts.CapabilityCatalog, modelCapability(r, "solo_agent"))
 	}
+}
+
+// Complete agent catalogs contain encrypted detail blocks even with
+// need_prompt=false. The generic 1 MiB body limit silently truncated them.
+const maxModelCatalogBytes = 8 << 20
+
+func (c *Client) readModelCatalogJSON(req *http.Request) ([]byte, error) {
+	resp, err := netroute.Do(c.HTTP, req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxModelCatalogBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("model catalog response incomplete")
+	}
+	if len(data) > maxModelCatalogBytes {
+		return nil, fmt.Errorf("model catalog response exceeds 8 MiB limit")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &Error{Kind: Classify(resp.StatusCode, string(data)), Status: resp.StatusCode, Msg: "model catalog HTTP failure"}
+	}
+	return data, nil
 }
